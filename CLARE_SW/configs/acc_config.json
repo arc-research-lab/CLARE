@@ -1,0 +1,12 @@
+{
+    "size_x":1536,
+    "size_y":128,
+    "size_z":1024,
+    "load":17200,
+    "comp":23362,
+    "store":228288,
+    "clean_output":15200,
+    "persist":228288,
+    "resume":456576,
+    "kernel_mgmt":2
+}
