@@ -13,7 +13,6 @@ This scripts will parse the inputed workload shape, then:
 """
 import json
 import math
-
 from typing import List
 from utils import print_iters
 
