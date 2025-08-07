@@ -39,7 +39,7 @@ class AccRegion:
     """
     One non-preemptive region in schedulability analysis
     """
-    def __init__(self, exec_time:int=0, ovhd:int=0, iters:List[AccIter]=None):
+    def __init__(self, exec_time:int=0, ovhd:int=0, iters:List[AccIter]=[]):
         self.ovhd = ovhd #the preemption ovhd before this region, used in schedulability analysis
         self.so = 0 #swap-out ovhd after this region, used in simulation
         self.si = 0 #swap-in ovhd before this region, used in simulation
@@ -47,12 +47,29 @@ class AccRegion:
     def print_iters(self):
         print_iters(self,['layer','idx','is_preemptive','strategy'])
 
+    #cache the properties for code perf
     @property
     def exec_time(self):
         return sum(iter.exec for iter in self.iters)
     @property
+    def exec_time_cached(self):
+        if not hasattr(self, '_exec_time_cache'):
+            self.refresh_caches()
+        return self._exec_time_cache
+
+    @property
     def wcet(self):
         return self.exec_time + self.ovhd
+    @property
+    def wcet_cached(self):
+        if not hasattr(self, '_wcet_cache'):
+            self.refresh_caches()
+        return self._wcet_cache
+    
+    def refresh_caches(self):
+        exec_time_val = self.exec_time  # compute once
+        self._exec_time_cache = exec_time_val
+        self._wcet_cache = exec_time_val + self.ovhd
 
 class AccTask:
     """
@@ -142,10 +159,22 @@ class AccTask:
     @property
     def exec_time(self):
         return sum(region.exec_time for region in self.regions)
-
+    @property
+    def exec_time_cached(self):
+        if not hasattr(self, '_exec_time_cache'):
+            self.refresh_caches()
+        return self._exec_time_cache
     @property
     def wcet(self):
         return sum(region.wcet for region in self.regions)
+    @property
+    def wcet_cached(self):
+        if not hasattr(self, '_wcet_cache'):
+            self.refresh_caches()
+        return self._wcet_cache
+    def refresh_caches(self):
+        self._exec_time_cache = self.exec_time
+        self._wcet_cache = self.wcet
 
     def print_iters(self):
         for npr in self.regions:
@@ -190,6 +219,7 @@ class AccTaskset:
     @property
     def sorted_tasks(self):
         assert len(self.periods)==len(self.tasks),'[AccTaskset.sorted_tasks]:unmatching #periods and #tasks'
+        
         return sorted(zip(self.tasks, self.periods), key=lambda x: x[1])
     def _comp_preemption_ovhd(self):
         for idx, (task,_) in enumerate(self.sorted_tasks):
@@ -213,6 +243,10 @@ class AccTaskset:
                 return
         raise ValueError("Task to replace not found in Taskset.")
 
+class AccRegionSim:
+    """static class, caches the info needed in a region to optimize simulation"""
+    ...
+
 class schedulability_analyzer():
     """
     a class contains the functions used in schedulability analysis
@@ -232,7 +266,7 @@ class schedulability_analyzer():
         q_max = [None]*(self._n+1) #index from [0,n], where q_max[0] never used
         for idx, (task, period) in enumerate(self.TS.sorted_tasks):
             task:AccTask
-            q_max[idx] = max(region.wcet for region in task.regions)
+            q_max[idx] = max(region.wcet_cached for region in task.regions)
         q_max[self._n] = 0
         return q_max
     @cached_property 
@@ -281,13 +315,20 @@ class schedulability_analyzer():
         e_i = sum(j)(b_ij + xi_ij), 
         where b_ij is the execution lengeth, xi_ij is the preemption ovhd of each task
         """
-        return [task.wcet for (task,period) in self.TS.sorted_tasks]
+        return [task.wcet_cached for (task,period) in self.TS.sorted_tasks]
+    @property
+    def _e_cached(self):
+        # if not hasattr(self, '_e_cache'):
+        #     self.refresh_caches()
+        #manually refresh the value
+        return self._e_cache 
     def _DBF(self,j,t):
         """Demand Budget Func:
         j ranges from [0,n-1],t is the t's defined by Gamma(t) (in _t())"""
-        assert 0<=j and j<=self._n-1, "[sche_analyzer._DBF]: j value out of range"
-        DBF = 1 + math.floor((t-self._d[j])/self._p[j])
-        DBF *= self._e[j]
+        # assert 0<=j and j<=self._n-1, "[sche_analyzer._DBF]: j value out of range"
+        # DBF = 1 + math.floor((t-self._d[j])/self._p[j])
+        DBF = 1 + (t-self._d[j])//self._p[j]
+        DBF *= self._e_cached[j]
         # debug_print("DBF[{}][{}]:{} = {} x {}".format(j,t,DBF,1 + math.floor((t-self._d[j])/self._p[j]),self._e[j]))
         return DBF
     def _sum_DBF(self,t):
@@ -298,7 +339,6 @@ class schedulability_analyzer():
         """compute one beta point, k ranging from [0,n-1]"""
         assert 0<=k and k<=self._n-1, "[sche_analyzer._beta_k]:k value out of range"
         # debug_print("compute beta {}".format(k))
-
         possible_t = self._t(k)
         possible_beta = [t-self._sum_DBF(t) for t in possible_t]
         beta_k = min(
@@ -312,9 +352,12 @@ class schedulability_analyzer():
         for idx in range(0,self._n):
             beta[idx] = self._beta_k(idx)
         return beta
+    def refresh_caches(self):
+        self._e_cache = self._e
     def schedulability_test(self):
         """Note: the therom indexes begining with 1, thus all list indexing should -1
         for i ranges from [1,n], q^max[i] <= min(beta[k]) where k = [0,i-1]"""
+        self.refresh_caches()
         q_max = self._q_max
         beta = self._beta
         ineq_result = [q_max[i]<=min(beta[0:i]) for i in range(1,self._n+1)]
@@ -430,8 +473,8 @@ class PP_placer(schedulability_analyzer):
         """
         #iterate through the tasks:
         for idx,(task,_) in enumerate(self.TS.sorted_tasks):
-            # for task,_ in self.TS.sorted_tasks:
-            #     print(task)
+            #refresh caches
+            self.refresh_caches()
             if idx == 0:#merge the first task as a whole
                 merged_task = AccTask()
                 merged_task.ID = task.ID
@@ -455,25 +498,28 @@ if __name__ == '__main__':
     iter = AccIter()
     # print(iter)
     w1=Workload()
+    print('decompose_NN')
     w1.decompose_NN([[256,4096,256],[256,256,256]],config)
     # w1.comp_ovhd(config)
     # w1.print_iters(['layer','idx','load','comp','store','o_start','last_o_start','so_r','so_p','si_r','si_p'])
-    s1 = StrategyNonPreemptive()
-    s1 = StrategyLayerwise()
+    print('apply strategy')
     s1 = StrategyFlexible()
     s1.from_workload(w1)
     # s1.print_iters(['layer','idx','is_preemptive','si_r','si_p','strategy'])
     t1 = AccTask(s1)
     # print(t1)
 
-    taskset = AccTaskset([s1,s1],[0.2,0.3])
+    print('form taskset')
+    taskset = AccTaskset([s1,s1],[0.2,0.21])
     # for task,_ in taskset.sorted_tasks:
     #     print(task)
 
+    print('begin sche analysis')
     ana = schedulability_analyzer(taskset)
     print('sche analysis:',ana.schedulability_test())
     debug_print('beta_value',ana._beta)
 
+    print('begin PPP')
     PPP = PP_placer(taskset)
     PPP.PP_placement()
     print("PPP success:",PPP.PPP_success)
