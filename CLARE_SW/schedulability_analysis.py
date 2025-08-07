@@ -30,7 +30,7 @@ from typing import List
 from copy import deepcopy
 from parse_workload import AccIter, Workload, AccConfig
 from apply_strategy import *
-from utils import print_iters
+from utils import print_iters, lcm
 import math
 from functools import cached_property
 
@@ -155,7 +155,7 @@ class AccTask:
 
     def __repr__(self):
         reprs = [f"({r.ovhd}|{r.exec_time})" for r in self.regions]
-        return f"{' -> '.join(reprs)}"
+        return f"<AccTask ID={self.ID}, regions=[{' -> '.join(reprs)}]>"
 
 class AccTaskset:
     """
@@ -205,50 +205,13 @@ class AccTaskset:
                         if preempted_region.so>max_so:
                             max_so = preempted_region.so
             task.regions[0].ovhd=max_so
-    def schedulability_analysis(self):
-        """Based on the execution time(b), preemption overhead(xi), periods(p) 
-        determine if the taskset can meet deadline even in the worst case"""
-
-class schedulability_analyzer_():
-    """a statistic class contains the functions used in schedulability analysis"""
-    def _DBF(t,d_j,p_j,e_j):
-        """t: time, d_j: LCM of task 1~(j-1)'s period, p_j: task j's period, e_j: task j's WCET(ovhd+exec)"""       
-        return ( 1+math.floor((t-d_j)/p_j) )*e_j
-    
-    def _comp_q_max(taskset:AccTaskset):
-        """q^max_i ranges from 1 to n+1, 
-            i=1~n, q^max_i is the longest NPR in this task
-            i=n+1, q^max_n+1 = 0"""
-        q_max_list = []
-        for idx, (task, period) in taskset.sorted_tasks:
-            q_max = max(region.wcet for region in task.regions)
-            q_max_list.append(q_max)
-        q_max_list.append(0)
-            
-    def _comp_beta(taskset:AccTaskset):
-        ...
-
-    def _comp_p(taskset:AccTaskset):
-        """return the period list in the taskset"""
-        return [period for _,period in taskset.sorted_tasks]
-    
-    def _comp_d(taskset:AccTaskset):
-        """d_i+1 = LCM(p1,p2,...pi), for d_k, k ranges from [2,n+1]"""
-        SA = schedulability_analyzer
-        p_list = SA._comp_p(taskset)
-        d_list = []
-        d_list.append(None)#d_1 is not defined
-        for i in range(1,len(taskset.sorted_tasks)+1):
-            d = math.lcm(p_list[1-1:(i-1)+1]) #e.g. d_list[2]=d_3=lcm(p1,p2)=lcm(p_list[0],p_list[1])
-            d_list.append[d]
-        return d_list
-            
-    def schedulability_test(taskset:AccTaskset):
-        """Note: the therom indexes begining with 1, thus all list indexing should -1"""
-        SA = schedulability_analyzer
-        n = len(taskset.sorted_tasks) # #tasks
-        q_max_list = SA._comp_q_max(taskset)
-        beta_list = ...
+    def replace_task(self, old_task:AccTask, new_task:AccTask):
+        """replace a task using a new AccTask, used in PPP"""
+        for idx, task in enumerate(self.tasks):
+            if task is old_task:
+                self.tasks[idx] = new_task
+                return
+        raise ValueError("Task to replace not found in Taskset.")
 
 class schedulability_analyzer():
     """
@@ -267,7 +230,7 @@ class schedulability_analyzer():
         """q^max: max NPR WCET in a task, index ranging from (0, n]
         q^max[n] = 0"""
         q_max = [None]*(self._n+1) #index from [0,n], where q_max[0] never used
-        for idx, (task, period) in self.TS.sorted_tasks:
+        for idx, (task, period) in enumerate(self.TS.sorted_tasks):
             task:AccTask
             q_max[idx] = max(region.wcet for region in task.regions)
         q_max[self._n] = 0
@@ -283,7 +246,7 @@ class schedulability_analyzer():
         where lcm stands for least common multiple
         in CLARE we set d[i]=p[i], i.e. a job must be finished before its successor releases"""
         d = deepcopy(self._p)
-        d.append(math.lcm(self._p))
+        d.append(lcm(self._p))
         return d  
     def _t(self,k):
         """the possible t points when computing beta:
@@ -302,7 +265,16 @@ class schedulability_analyzer():
             tx = [ti for ti in range(self._d[x],UB,self._p[x])
                   if ti>=LB] 
             t+=tx
-    @cached_property
+        #TODO: check out the exact logic when there's a case that LB=UB
+        #2 cases will result in LB=UB
+        # (1) 2 tasks has the exact same period
+        # (2) the longest period happen to be the lcm of the others
+        #in such cases the logic above will generate [] thus can't get a valid beta
+        #add the LB as the t for analysis
+        if LB==UB:
+            t.append(LB)
+        return t
+    @property #when conducting PPP, e will change since ovhd is reduced
     def _e(self):
         """
         WCET for each task, ranging from [0,n-1]
@@ -314,7 +286,7 @@ class schedulability_analyzer():
         """Demand Budget Func:
         j ranges from [0,n-1],t is the t's defined by Gamma(t) (in _t())"""
         assert 0<=j and j<=self._n-1, "[sche_analyzer._DBF]: j value out of range"
-        DBF = 1 + math.floor((t-self._d[j])/self.p[j])
+        DBF = 1 + math.floor((t-self._d[j])/self._p[j])
         DBF *= self._e[j]
         return DBF
     def _sum_DBF(self,t):
@@ -324,8 +296,11 @@ class schedulability_analyzer():
     def _beta_k(self,k):
         """compute one beta point, k ranging from [0,n-1]"""
         assert 0<=k and k<=self._n-1, "[sche_analyzer._beta_k]:k value out of range"
+
+        possible_t = self._t(k)
+        possible_beta = [t-self._sum_DBF(t) for t in possible_t]
         beta_k = min(
-            t-self._sum_DBF(t) for t in self._t(k)
+            possible_beta
         )
         return beta_k
     @property
@@ -335,7 +310,6 @@ class schedulability_analyzer():
         for idx in range(0,self._n):
             beta[idx] = self._beta_k(idx)
         return beta
-
     def schedulability_test(self):
         """Note: the therom indexes begining with 1, thus all list indexing should -1
         for i ranges from [1,n], q^max[i] <= min(beta[k]) where k = [0,i-1]"""
@@ -344,29 +318,162 @@ class schedulability_analyzer():
         ineq_result = [q_max[i]<=min(beta[0:i]) for i in range(1,self._n+1)]
         return all(ineq_result)
 
+class PP_placer(schedulability_analyzer):
+    """a taskset """
+    def __init__(self, taskset):
+        """since the taskset is copied, directly change it for the placed taskset"""
+        super().__init__(taskset)
+        self.PPP_success=None
+        self.PPP_err_msg=None
+    @property
+    def _U(self):
+        """Upper bound of the q^max(the max NPR length)
+        for i ranges from [1,n], q^max[i] <= min(beta[k]) where k = [0,i-1]
+        Thus U ranges from [1,n-1]:
+            - task 0(first task): won't be preempted, merged as a whole
+            - task i in [1,n-1]: relies on beta[0]~beta[i-1] --> to place Ti, T0~Ti-1 must be placed"""
+        U = [None]*self._n
+        U[0] = None #Task 0: no upper bound, shouldn't be used
+        beta = self._beta
+        for i in range(1,self._n):
+            U[i] = min(beta[0:i])#U_1 to U_n-1
+        return U
+
+    def _merge_region(self, r1:AccRegion,r2:AccRegion)->AccRegion:
+        """merge two consequtive Acc regions into one new region, r1 is the earlier one
+        """
+        merged = AccRegion()
+        # merged.iters = deepcopy(r1.iters)
+        #change attributes:
+        ##iterations
+        merged.iters = deepcopy(r1.iters) + deepcopy(r2.iters)
+        ##ovhd **before** the region: the ovhd between r1 and r2 is removed
+        merged.ovhd = r1.ovhd
+        ##si: **before** the region
+        merged.si = r1.si
+        ##so: **after** the region
+        ##it's true that PPP will change the so of one task, affecting the preemotion ovhd of others
+        ##the problem is, for task i,j(i<j) ovhd of task i relies on PPP of task j
+        ##but PPP of task j needs to know the ovhd of task i
+        ##Since PPP won't increase but decrease the ovhd(since so are removed), it's safe to keep the preemption ovhd 
+        merged.so = r1.so
+        return merged
+
+    def _merge_list(self,regions:List[AccRegion])->AccRegion:
+        """merge a list of regions as if merge them sequentially from List[0]
+            can 'merge' list of only one region: return the region itself"""
+        if len(regions) == 1:#only one region
+            return deepcopy(regions[0])
+        else:
+            merged_region = self._merge_region(regions[0],regions[1])
+            for region in regions[1:]:
+                merged_region = self._merge_region(merged_region,region)
+            return merged_region
+    
+    def _merge_task(self, task:AccTask, Ui)->AccTask:
+        """give the upper bound of NPR length(Ui) computed, merge the regions to place the PPs
+        A sliding window algorithm is applied"""
+        new_task = AccTask()
+        new_task.ID = task.ID
+
+        start_idx = 0
+        end_idx = 0#start and end index of the sliding window
+        trial_idx = 0#
+        while end_idx < len(task.regions):
+            #try to merge a new region, sliding window:[start_idx, end_idx]
+            merged = self._merge_list(task.regions[start_idx:end_idx+1])
+            if merged.wcet < Ui:
+                #success
+                if end_idx <len(task.regions)-1:#not the last region, try to merge the next one
+                    end_idx += 1
+                    continue
+                else:#the last region, add to task & break
+                    new_task.regions.append(merged)
+                    break
+            else:
+                #fail, have to add a PP within the regions[start_idx, end_idx] to split them to two parts, 
+                #namely 'left' and 'right' region on the timeline
+                #the object is (1) both left and right region, wcet < ui and (2) the right region has the smallest wcet
+                split_candidate = []#possible split solution
+                for trial_idx in range(start_idx, end_idx):#left:[start_idx,trial_idx], right:(trial_idx, end_idx]
+                    left_list = task.regions[start_idx:trial_idx+1]
+                    right_list = task.regions[trial_idx+1:end_idx+1]
+                    if len(left_list)==0 or len(right_list)==0:
+                        continue#both slices must not be empty since otherwise no PP is inserted
+                    left_region = self._merge_list(left_list)
+                    right_region = self._merge_list(right_list)
+                    if left_region.wcet > Ui or right_region.wcet > Ui:
+                        continue#both regions have to satisfy the Ui bound
+                    #a valid solution
+                    split_candidate.append((trial_idx,right_region.wcet))
+                if len(split_candidate) == 0:
+                    #no valid solution found, PPP fails
+                    raise ValueError("PPP fails")
+                #get the solution with smallest right.wcet
+                split_idx = min(split_candidate, key=lambda x: x[1])[0]
+                #the left is kicked out of the sliding window
+                new_task.regions.append(self._merge_list(task.regions[start_idx:split_idx+1]))
+                #the right is the new sliding window
+                start_idx = split_idx+1
+                continue
+        return new_task
+
+    def PP_placement(self):
+        """
+        Merge the regions to remove redudant PPs, reducing ovhd.
+        The key idea is to use the min(beta) or U as the upper bound of merging two regions
+        for task 0, no other tasks can preempt it, thus it's placed as a whole
+        for task i(i>0), U[i] is related to the wcet of task [0~i-1], thus we need to place PP in sequence of tasks
+        """
+        #iterate through the tasks:
+        for idx,(task,_) in enumerate(self.TS.sorted_tasks):
+            if idx == 0:#merge the first task as a whole
+                merged_task = AccTask()
+                merged_task.ID = task.ID
+                merged_task.regions = [self._merge_list(task.regions)]
+                self.TS.replace_task(task,merged_task)
+            else:#compute upperbound, then merge task
+                try:
+                    Ui = self._U[idx]
+                    merged_task = self._merge_task(task,Ui)
+                    self.TS.replace_task(task,merged_task)
+                except ValueError as e:
+                    #when PP placement fails
+                    self.PPP_success = False
+                    self.PPP_err_msg = e
+                    return
+        self.PPP_success = True
+  
 
 
 if __name__ == '__main__':
-    config = AccConfig.from_json("./configs/acc_config.json")
+    config = AccConfig.from_json("/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json")
     # print(config)
     iter = AccIter()
     # print(iter)
     w1=Workload()
     w1.decompose_NN([[256,4096,256],[256,256,256]],config)
     # w1.comp_ovhd(config)
-    w1.print_iters(['layer','idx','load','comp','store','o_start','last_o_start','so_r','so_p','si_r','si_p'])
-    s1 = StrategyNonPreemptive()
-    s1 = StrategyLayerwise()
+    # w1.print_iters(['layer','idx','load','comp','store','o_start','last_o_start','so_r','so_p','si_r','si_p'])
+    # s1 = StrategyNonPreemptive()
+    # s1 = StrategyLayerwise()
+    s1 = StrategyFlexible()
     s1.from_workload(w1)
     # s1.print_iters(['layer','idx','is_preemptive','si_r','si_p','strategy'])
 
     t1 = AccTask(s1)
     # print(t1)
 
-    taskset = AccTaskset([s1,s1],[0.1,0.2])
-    print(taskset.periods)
-    print(taskset.utils)
-    print('!!!!!!!!!!!!!!!!!!!!!!!!')
-    print(taskset.tasks)
-    print('!!!!!!!!!!!!!!!!!!!!!!!!')
+    taskset = AccTaskset([s1,s1],[0.01,0.02])
+    for task,_ in taskset.sorted_tasks:
+        print(task)
+
+    ana = schedulability_analyzer(taskset)
+    print('sche analysis:',ana.schedulability_test())
+
+    PPP = PP_placer(taskset)
+    PPP.PP_placement()
+    print(PPP.TS.sorted_tasks)
+    print(PPP.PPP_err_msg)
+    print(PPP.PPP_success)
 
