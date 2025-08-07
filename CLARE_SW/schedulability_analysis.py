@@ -30,7 +30,7 @@ from typing import List
 from copy import deepcopy
 from parse_workload import AccIter, Workload, AccConfig
 from apply_strategy import *
-from utils import print_iters, lcm
+from utils import print_iters, lcm, debug_print
 import math
 from functools import cached_property
 
@@ -225,7 +225,7 @@ class schedulability_analyzer():
     def _n(self):
         """#tasks, task ranging from [0, n-1]"""
         return len(self.TS.sorted_tasks)
-    @property
+    @cached_property
     def _q_max(self):
         """q^max: max NPR WCET in a task, index ranging from (0, n]
         q^max[n] = 0"""
@@ -238,7 +238,7 @@ class schedulability_analyzer():
     @cached_property 
     def _p(self):
         """periods of each task, ranging from [0,n-1]"""
-        return [period for _,period in taskset.sorted_tasks]
+        return [period for _,period in self.TS.sorted_tasks]
     @cached_property
     def _d(self):
         """deadline, ranges from [0,n]
@@ -281,13 +281,14 @@ class schedulability_analyzer():
         e_i = sum(j)(b_ij + xi_ij), 
         where b_ij is the execution lengeth, xi_ij is the preemption ovhd of each task
         """
-        return [task.wcet for (task,period) in taskset.sorted_tasks]
+        return [task.wcet for (task,period) in self.TS.sorted_tasks]
     def _DBF(self,j,t):
         """Demand Budget Func:
         j ranges from [0,n-1],t is the t's defined by Gamma(t) (in _t())"""
         assert 0<=j and j<=self._n-1, "[sche_analyzer._DBF]: j value out of range"
         DBF = 1 + math.floor((t-self._d[j])/self._p[j])
         DBF *= self._e[j]
+        # debug_print("DBF[{}][{}]:{} = {} x {}".format(j,t,DBF,1 + math.floor((t-self._d[j])/self._p[j]),self._e[j]))
         return DBF
     def _sum_DBF(self,t):
         """the sche analysis alway sum up the DBF func for all tasks at one time instance"""
@@ -296,6 +297,7 @@ class schedulability_analyzer():
     def _beta_k(self,k):
         """compute one beta point, k ranging from [0,n-1]"""
         assert 0<=k and k<=self._n-1, "[sche_analyzer._beta_k]:k value out of range"
+        # debug_print("compute beta {}".format(k))
 
         possible_t = self._t(k)
         possible_beta = [t-self._sum_DBF(t) for t in possible_t]
@@ -366,8 +368,9 @@ class PP_placer(schedulability_analyzer):
             return deepcopy(regions[0])
         else:
             merged_region = self._merge_region(regions[0],regions[1])
-            for region in regions[1:]:
-                merged_region = self._merge_region(merged_region,region)
+            if len(regions) > 2:
+                for region in regions[2:]:
+                    merged_region = self._merge_region(merged_region,region)
             return merged_region
     
     def _merge_task(self, task:AccTask, Ui)->AccTask:
@@ -427,6 +430,8 @@ class PP_placer(schedulability_analyzer):
         """
         #iterate through the tasks:
         for idx,(task,_) in enumerate(self.TS.sorted_tasks):
+            # for task,_ in self.TS.sorted_tasks:
+            #     print(task)
             if idx == 0:#merge the first task as a whole
                 merged_task = AccTask()
                 merged_task.ID = task.ID
@@ -443,8 +448,6 @@ class PP_placer(schedulability_analyzer):
                     self.PPP_err_msg = e
                     return
         self.PPP_success = True
-  
-
 
 if __name__ == '__main__':
     config = AccConfig.from_json("/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json")
@@ -455,25 +458,25 @@ if __name__ == '__main__':
     w1.decompose_NN([[256,4096,256],[256,256,256]],config)
     # w1.comp_ovhd(config)
     # w1.print_iters(['layer','idx','load','comp','store','o_start','last_o_start','so_r','so_p','si_r','si_p'])
-    # s1 = StrategyNonPreemptive()
-    # s1 = StrategyLayerwise()
+    s1 = StrategyNonPreemptive()
+    s1 = StrategyLayerwise()
     s1 = StrategyFlexible()
     s1.from_workload(w1)
     # s1.print_iters(['layer','idx','is_preemptive','si_r','si_p','strategy'])
-
     t1 = AccTask(s1)
     # print(t1)
 
-    taskset = AccTaskset([s1,s1],[0.01,0.02])
-    for task,_ in taskset.sorted_tasks:
-        print(task)
+    taskset = AccTaskset([s1,s1],[0.2,0.3])
+    # for task,_ in taskset.sorted_tasks:
+    #     print(task)
 
     ana = schedulability_analyzer(taskset)
     print('sche analysis:',ana.schedulability_test())
+    debug_print('beta_value',ana._beta)
 
     PPP = PP_placer(taskset)
     PPP.PP_placement()
+    print("PPP success:",PPP.PPP_success)
     print(PPP.TS.sorted_tasks)
-    print(PPP.PPP_err_msg)
-    print(PPP.PPP_success)
+    
 
