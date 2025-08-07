@@ -4,3 +4,4 @@ __pycache__/
 *$py.class
 *.pyc
 CLARE_SW/profile_output.txt
+*.lprof
