@@ -1,0 +1,12 @@
+{
+    "feed_back_latency":2,
+    "_comment":"baseline latency for processing a branch, including heap operation of one-level",
+    "task_release_latency":6 ,
+    "issue_instr_latency":2 ,
+    "task_finish_latency":4 ,
+    "_comment":"heap operations",
+    "heap_top_down_depth":4 ,
+    "heap_top_down_II":3 ,
+    "heap_bottom_up_depth": 5,
+    "heap_bottom_up_II":2
+}

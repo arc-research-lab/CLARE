@@ -78,7 +78,7 @@ class AccTask:
     def __init__(self, strategy=None):
         self.regions = []
         self.ID = None # used for future updates for generating metadata
-        self.period = None
+        # self.period = None
         if strategy is not None:
             self._from_strategy(strategy)
             self._comp_resume_ovhd()
@@ -89,6 +89,7 @@ class AccTask:
         assert isinstance(strategy, PreemptionStrategy), "[Acctask.from_strategy]:the input strategy must be subclass of PreemptionStrategy"
         s = deepcopy(strategy)
         iters_in_region = []
+        self.ID=strategy.ID
         for idx,iter in enumerate(s.iters):
             iter:AccIter
             iters_in_region.append(iter)
@@ -201,7 +202,8 @@ class AccTaskset:
         self.tasks:List[AccTask] = []
         self.utils = []
         self.periods = []
-        self.sche_test_result = None #schedulability test result
+        self.sche_test_success = None #schedulability test result
+        self.PPP_success = None
         if len(strategies)!=0:
             self.utils = deepcopy(utils)
             self._from_strategies(strategies)
@@ -243,10 +245,6 @@ class AccTaskset:
                 return
         raise ValueError("Task to replace not found in Taskset.")
 
-class AccRegionSim:
-    """static class, caches the info needed in a region to optimize simulation"""
-    ...
-
 class schedulability_analyzer():
     """
     a class contains the functions used in schedulability analysis
@@ -254,6 +252,7 @@ class schedulability_analyzer():
     """
     def __init__(self,taskset:AccTaskset):
         self.TS = deepcopy(taskset)
+        self.sche_test_success = None
 
     @cached_property
     def _n(self):
@@ -300,11 +299,13 @@ class schedulability_analyzer():
                   if ti>=LB] 
             t+=tx
         #TODO: check out the exact logic when there's a case that LB=UB
-        #2 cases will result in LB=UB
+        #2 cases will result in LB==UB
         # (1) 2 tasks has the exact same period
         # (2) the longest period happen to be the lcm of the others
-        #in such cases the logic above will generate [] thus can't get a valid beta
-        #add the LB as the t for analysis
+        # handling: if LB==UB, add the UB in consideration
+        # this introduces additional possible t, thus potentially reduces beta_k
+        # Still, this is safe since the scheduability analysis represents a sufficient condiction of meet deadline
+        # The cases with False result can still meet ddl in simulation
         if LB==UB:
             t.append(LB)
         return t
@@ -340,10 +341,9 @@ class schedulability_analyzer():
         assert 0<=k and k<=self._n-1, "[sche_analyzer._beta_k]:k value out of range"
         # debug_print("compute beta {}".format(k))
         possible_t = self._t(k)
+
         possible_beta = [t-self._sum_DBF(t) for t in possible_t]
-        beta_k = min(
-            possible_beta
-        )
+        beta_k = min(possible_beta)
         return beta_k
     @property
     def _beta(self):
@@ -354,15 +354,26 @@ class schedulability_analyzer():
         return beta
     def refresh_caches(self):
         self._e_cache = self._e
-    def schedulability_test(self):
+    def schedulability_test(self)->AccTaskset:
         """Note: the therom indexes begining with 1, thus all list indexing should -1
         for i ranges from [1,n], q^max[i] <= min(beta[k]) where k = [0,i-1]"""
         self.refresh_caches()
         q_max = self._q_max
         beta = self._beta
         ineq_result = [q_max[i]<=min(beta[0:i]) for i in range(1,self._n+1)]
-        return all(ineq_result)
-
+        # debug_print('ineq result:')
+        # for i in range(1,self._n+1):
+        #     print("[{}|{}]".format(q_max[i],min(beta[0:i])))
+        success = all(ineq_result)
+        if success:
+            self.sche_test_success = True
+            self.TS.sche_test_success = True
+            return self.TS
+        else:
+            self.sche_test_success = False
+            self.TS.sche_test_success = False
+            return self.TS
+            
 class PP_placer(schedulability_analyzer):
     """a taskset """
     def __init__(self, taskset):
@@ -464,7 +475,7 @@ class PP_placer(schedulability_analyzer):
                 continue
         return new_task
 
-    def PP_placement(self):
+    def PP_placement(self)->AccTaskset:
         """
         Merge the regions to remove redudant PPs, reducing ovhd.
         The key idea is to use the min(beta) or U as the upper bound of merging two regions
@@ -489,8 +500,14 @@ class PP_placer(schedulability_analyzer):
                     #when PP placement fails
                     self.PPP_success = False
                     self.PPP_err_msg = e
-                    return
+                    self.TS.PPP_success = False
+                    self.TS.sche_test_success = False    
+                    return self.TS
         self.PPP_success = True
+        self.TS.PPP_success = True
+        self.TS.sche_test_success = True 
+        return self.TS
+
 
 if __name__ == '__main__':
     config = AccConfig.from_json("/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json")
@@ -503,20 +520,22 @@ if __name__ == '__main__':
     # w1.comp_ovhd(config)
     # w1.print_iters(['layer','idx','load','comp','store','o_start','last_o_start','so_r','so_p','si_r','si_p'])
     print('apply strategy')
-    s1 = StrategyFlexible()
+    s1 = StrategyLayerwise()
+    # s1 = StrategyFlexible()
     s1.from_workload(w1)
     # s1.print_iters(['layer','idx','is_preemptive','si_r','si_p','strategy'])
     t1 = AccTask(s1)
     # print(t1)
 
     print('form taskset')
-    taskset = AccTaskset([s1,s1],[0.2,0.21])
-    # for task,_ in taskset.sorted_tasks:
-    #     print(task)
+    taskset = AccTaskset([s1,s1],[0.4,0.4])
+    for task,_ in taskset.sorted_tasks:
+        print(task)
 
     print('begin sche analysis')
     ana = schedulability_analyzer(taskset)
-    print('sche analysis:',ana.schedulability_test())
+    ana.schedulability_test()
+    print('sche analysis:',ana.sche_test_success)
     debug_print('beta_value',ana._beta)
 
     print('begin PPP')

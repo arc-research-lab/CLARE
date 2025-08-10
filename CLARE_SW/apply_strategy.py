@@ -35,6 +35,7 @@ class PreemptionStrategy:
     "base class for all preemption strategy"
     def __init__(self):
         self.iters:List[AccIter] = []
+        self.ID=None
     
     def from_workload(self,workload:Workload):
         raise NotImplementedError('[Preemption Strategy]: this is a abstract class, use a the child classes instead')
@@ -52,6 +53,7 @@ class StrategyNonPreemptive(PreemptionStrategy):
             iter.is_preemptive = False
             iter.strategy = PPStrategy.NA #not applicable
         self.iters[-1].is_preemptive = True
+        self.ID = workload.ID
     
 class StrategyLayerwise(PreemptionStrategy):
     "Layerwise preemptive execution: each layer in a model is a whole"
@@ -72,6 +74,7 @@ class StrategyLayerwise(PreemptionStrategy):
                 iter.is_preemptive = True
             else:
                 iter.is_preemptive = False
+        self.ID = workload.ID
 
 class StrategyRecompute(PreemptionStrategy):
     """Recompute only strategy"""
@@ -86,6 +89,7 @@ class StrategyRecompute(PreemptionStrategy):
         #add is_preemptive
         for iter in self.iters:
             iter.is_preemptive = True
+        self.ID = workload.ID
 
 class StrategyPersist(PreemptionStrategy):
     """Persist only strategy"""
@@ -100,6 +104,7 @@ class StrategyPersist(PreemptionStrategy):
         #add is_preemptive
         for iter in self.iters:
             iter.is_preemptive = True
+        self.ID = workload.ID
 
 class StrategyFlexible(PreemptionStrategy):
     """Flexible strategy: choose the strategy based on the resume/swap-in ovhd"""
@@ -122,6 +127,7 @@ class StrategyFlexible(PreemptionStrategy):
         #add is_preemptive
         for iter in self.iters:
             iter.is_preemptive = True
+        self.ID = workload.ID
 
 #for strategy with or without PPP, their 
 class StrategyRecomputePPP(StrategyRecompute):

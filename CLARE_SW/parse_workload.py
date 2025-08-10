@@ -79,17 +79,19 @@ class AccIter:
 class Workload:
     """stores all the execution latency information of a DNN model
     """
-    def __init__(self,NN:List[list]=None,config:AccConfig=None):
+    def __init__(self,NN:List[list]=None,config:AccConfig=None,ID=None):
         self.iters:List[AccIter] = [] #list to contain all iterations
         self.NN=None
         self.config=None
+        self.ID=ID
         if NN is not None:
             assert config is not None, "NN and config must be given together"
-            self.decompose_NN(NN,config)
+            self.decompose_NN(NN,config,ID)
     
-    def decompose_NN(self,NN:List[list],config:AccConfig):
+    def decompose_NN(self,NN:List[list],config:AccConfig,ID=None):
         self.NN=NN
         self.config=config
+        self.ID = ID
         #process one layer
         for layer_idx,layer_shape in enumerate(NN):
             self.iters+=Workload._decompose_layer(layer_idx,layer_shape,config)
