@@ -48,12 +48,14 @@ acc:
 from parse_workload import AccConfig, Workload
 from apply_strategy import *
 from schedulability_analysis import AccRegion, AccTask, AccTaskset, schedulability_analyzer, PP_placer
-from utils import debug_print
+from utils import debug_print, init_logger
 from copy import deepcopy
 import json
 import simpy
 import logging
-from typing import List
+from typing import List, Optional
+import sys
+
 
 class AccRegionSim:
     """static class, caches the info needed in a region to optimize simulation"""
@@ -107,6 +109,8 @@ class AccTasksetSim:
         for idx, task in enumerate(self.tasks):
             task:AccTaskSim
             task.period = self.periods[idx]
+        #add task id dict for lookup
+        self._task_dict = {t.ID: t for t in self.tasks}
 
     def __repr__(self):
         header = (
@@ -115,7 +119,10 @@ class AccTasksetSim:
         )
         task_reprs = "\n".join(repr(task) for task in self.tasks)
         return header + task_reprs
-
+    
+    def get_task(self,ID)->AccTaskSim:
+        return self._task_dict.get(ID)
+        
 class ScheConfig:
     """Scheduler configuration parameters."""
     def __init__(self, feed_back_latency:int, task_release_latency:int,
@@ -145,10 +152,11 @@ class ScheConfig:
 
 class JobSim:
     """data class representing a job in simulation"""
-    def __init__(self,task,job_id:int,release:int,ddl:int):
+    def __init__(self,task,job_id:int,num_region:int,release:int,ddl:int):
         self.task = task #task
         self.job_id = job_id
         self.region = 0 #the **next** region of this job to issue, idx begin from 0
+        self.num_region = num_region #the total region num
         self.release = release
         self.ddl = ddl #release and end cycle
         self.process = None #first time be processed
@@ -164,7 +172,6 @@ class JobGenerator:
         self.logger:logging.Logger = logger
         self.task_release_fifo:simpy.Store = task_release_fifo
         self.job_id:int = 0
-        self._run()
     def _generate_job(self,env:simpy.Environment,
                       task:AccTaskSim,fifo:simpy.Store,
                       logger:logging.Logger):
@@ -178,15 +185,15 @@ class JobGenerator:
             new_job = JobSim(
                 task=task_id,
                 job_id=job_id,
+                num_region=len(task.regions),
                 release = release,
                 ddl= ddl 
             )
-            logger.debug("[{}][JobGen] task released: task={}, Job={}, ddl={}".format(
-                release, task_id, job_id, ddl
-            ))
+            logger.info("[{}][JobGen] task released: task={}, Job={}, ddl={}"
+                         .format(release, task_id, job_id, ddl))
             yield fifo.put(new_job)
             yield self.env.timeout(period) #after a period, run again for periodically release
-    def _run(self):
+    def run(self):
         for task in self.taskset.tasks:
             self.env.process(self._generate_job(self.env,task,self.task_release_fifo,self.logger))
 
@@ -203,10 +210,12 @@ class Instr:
         self.last_region:int = None #used for conduct swap-in
 
 class Feedback:
-    def __init__(self):
-        pass
+    """small item notifying the execution is finished """
+    def __init__(self,job:JobSim,region:int):
+        self.job:JobSim = job
+        self.region:int = region
 
-class scheduler:
+class Scheduler:
     """simulate the heap behavior:
     - for performance, use a list to represent the heap, and assume the heap operation always take the worst
     - In HW implementation, seperate FIFOs are used to handle the job release, here a unified fifo are used
@@ -220,82 +229,197 @@ class scheduler:
                  logger:logging.Logger):
         self.sche_config:ScheConfig = sche_config
         self.env:simpy.Environment = env
-        self.taskset:AccTasksetSim = task
+        self.taskset:AccTasksetSim = taskset
         self.task_release_fifo:simpy.Store = task_release_fifo
         self.instr_fifo:simpy.Store = instr_fifo
         self.feedback_fifo:simpy.Store = feedback_fifo
         self.logger:logging.Logger = logger
         self.heap:List[JobSim] = []#use a list to represent the heap
-
+        #registers
+        self.cur_task = None
+        self.cur_region = None
+        self.issue_flag = None
     def _schedule(self):  
-        #compute heap op latency
+        #hyperparams
         num_task = len(self.taskset.tasks)
         max_heap_top_down_latency = self.sche_config.heap_top_down_depth \
             + num_task * self.sche_config.heap_top_down_II
         max_heap_bottom_up_latency = self.sche_config.heap_bottom_up_depth \
             + num_task * self.sche_config.heap_bottom_up_II
-        #record current task and region
-        #For init, since at t=0, it's always the task with the smallest period issued
-        #point to that task
+        #init regs
+        #current task and region: when t=0, it's always the task with the smallest p firstly
         min_task:AccTaskSim = min(self.taskset.tasks, key=lambda task:task.period)
-        cur_task = min_task.ID
-        cur_region =0
-        
-        #initialize
-        issue_flag = True
-        #register the first two events for listening
+        self.cur_task = min_task.ID
+        self.cur_region =0
+        self.issue_flag = True#to issue the first instr with no feedback before it
+        #register events for listening
         task_release_evt = self.task_release_fifo.get()
         feedback_evt = self.feedback_fifo.get()
+
+        #main loop
         while True:
             result = yield simpy.events.AnyOf(self.env, [task_release_evt, feedback_evt])
-            """process feedback
-            """
+            #process feedback
             if feedback_evt in result.events:
-                ...#TODO: implement after implement acc
-            """process job release
-            all job within the task release fifo will be processed at once
-            after each process, the latency will be paid, 
-            this is compatible with the HW behavior"""
+                yield from self.__process_fb(feedback_evt)#use yield from to pass the yield events from subfuncs
+                feedback_evt = self.feedback_fifo.get() #register the event for listening next time
+            #process job release
             if task_release_evt in result.events:
-                job:JobSim = task_release_evt.value #get the job
-                self.heap.append(job)
-                #in HW, here should conduct sort, in Sim we sort only when release job, but pay sort/heap latency here
-                #pay operation latency
-                self.logger.debug("[{}][Sche] Job added to heap: Task={}, Job={}".format(
-                    self.env.now, job.task, job.job_id))
-                yield self.env.timeout(max_heap_bottom_up_latency)
-                #check and process all other events
-                while self.task_release_fifo.items:
-                    job=self.task_release_fifo.items.pop(0)
-                    self.heap.append(job)
-                    self.logger.debug("[{}][Sche] Job added to heap: Task={}, Job={}".format(
-                    self.env.now, job.task, job.job_id))
-                    yield self.env.timeout(max_heap_bottom_up_latency)
-                #register the event for listening to the feedback next time
-                task_release_evt = self.task_release_fifo.get()
-            """issue instruction
-            it's ok if the flag is true but heap is empty, 
-            since to join something to the heap, a job must be released,
-            thus next time a job is released and add to the heap, 
-            the code will pass the yield and issue the instr can run correctly
-            """
-            if issue_flag and self.heap:
-                self.heap.sort(key=lambda job:job.ddl)#EDF
-                new_job=self.heap[0]
-                instr = Instr(new_job,
-                              new_job.region,#seperate this since obj will be updated
-                                
-                              )
+                yield from self.__process_job_gen(task_release_evt,max_heap_bottom_up_latency)
+                task_release_evt = self.task_release_fifo.get() 
+            #issue instruction: it's ok if the flag is true but heap is empty,
+            #since to join something to the heap, a job must be released and triggers the main loop
+            if self.issue_flag and self.heap:
+                yield from self.__process_instr_issue()
+                yield from self.__process_task_finish(max_heap_top_down_latency)
+    def __process_fb(self,feedback_evt):
+        #allow issuing next instr
+        feedback:Feedback = feedback_evt.value
+        self.issue_flag = True
+        yield self.env.timeout(self.sche_config.feed_back_latency)
+        self.logger.debug("[{}][Sche] region finish: task:{}, job:{}, region:{}"
+                          .format(self.env.now, feedback.job.task, feedback.job, feedback.region))
+        #check ddl miss when job finished
+        if feedback.job.region == feedback.job.num_region:
+            self.logger.info("[{}][Sche] region finish: task:{}, job:{}, region:{}"
+                          .format(self.env.now, feedback.job.task, feedback.job, feedback.region))
+            if feedback.job.ddl < self.env.now:#deadline not meet
+                self.logger.error("[{}][Sche] deadline miss!: task:{}, job:{}"
+                                  .format(self.env.now,feedback.job.task,feedback.job.job_id))
+                raise ValueError("deadline miss")
+    def __process_job_gen(self,task_release_evt,max_heap_bottom_up_latency):
+        """process job release
+            all job within the task release fifo will be processed in one run
+            after each process, a latency will be paid"""
+        job:JobSim = task_release_evt.value #get the job
+        self.heap.append(job)
+        #do not conduct heap sort, but pay sort latency
+        yield self.env.timeout(max_heap_bottom_up_latency)
+        self.logger.debug("[{}][Sche] Job added to heap: Task={}, Job={}"
+                          .format(self.env.now, job.task, job.job_id))
+        #check and process all other events
+        while self.task_release_fifo.items:
+            job=self.task_release_fifo.items.pop(0)
+            self.heap.append(job)
+            yield self.env.timeout(max_heap_bottom_up_latency)
+            self.logger.debug("[{}][Sche] Job added to heap: Task={}, Job={}"
+                              .format(self.env.now, job.task, job.job_id))
+    def __process_instr_issue(self):
+        """issue instructions: conduct EDF: 
+        (1)pick the job with the smallest ddl
+        (2)pick the next region of this job
+        (3)check if preemption or resume happens
+        (4)gen instr and put to the instr fifo """
+        self.heap.sort(key=lambda job:job.ddl)#EDF
+        next_job=self.heap[0]
+        #gen and issue instr
+        instr = Instr(job=next_job,
+                        region=next_job.region,#seperate this since obj will be updated
+                        #preemption: launch a new task but the current task hasn't finish
+                        preempt= next_job.task != self.cur_task
+                            and self.cur_region + 1 != len(self.taskset.get_task(self.cur_task).regions),
+                        #resume: launch a new task not starting from begining
+                        resume= next_job.task != self.cur_task
+                            and next_job.region !=0,
+                        last_task=self.cur_task,
+                        last_region=self.cur_region
+                        )
+        yield self.env.timeout(self.sche_config.task_release_latency)
+        yield self.instr_fifo.put(instr)
+        self.logger.debug("[{}][Sche] region released: task={}, job={}, region={}"
+                          .format(self.env.now,next_job.task,next_job.job_id,next_job.region))
+        #update status
+        next_job.issue.append(self.env.now)
+        self.issue_flag=False
+        self.cur_task = next_job.task
+        self.cur_region = next_job.region
+        next_job.region+=1
+    def __process_task_finish(self,max_heap_top_down_latency):
+        """task finish:
+        after the last region is issued, the job.region == job.num_region
+        remove this job and pay latency
+        in sim, the job obj can still be accessed via instr and feedback"""
+        #the job just issued must be the top of heap
+        if self.heap[0].region == self.heap[0].num_region:
+            end_job = self.heap[0]
+            self.heap.pop(0)
+            self.logger.debug("[{}][Sche] last region issued: task={}, region={}"
+                             .format(self.env.now,end_job.task,end_job.region))
+            yield self.env.timeout(max_heap_top_down_latency)
+    def run(self):
+        self.env.process(self._schedule())
+
+class SimManager:
+    def __init__(self,sche_config:ScheConfig,taskset:AccTasksetSim,logger_name="logger",log_path=None):
+        #input params
+        self.sche_config:ScheConfig = sche_config
+        self.taskset:AccTasksetSim = taskset
+        #simulation envs
+        self.env = simpy.Environment()
+        self.task_release_fifo = simpy.Store(self.env)#at most n tasks are released
+        self.instr_fifo = simpy.Store(self.env,capacity=1)
+        self.feedback_fifo = simpy.Store(self.env,capacity=1)
+        #logging
+        self.logger = init_logger(logger_name,log_path,logging.DEBUG)
+        self.job_generator = JobGenerator(self.env,self.taskset,
+                                          self.task_release_fifo,
+                                          self.logger)
+        self.scheduler = Scheduler(self.sche_config,self.env,self.taskset,
+                                   self.task_release_fifo,self.instr_fifo,self.feedback_fifo,
+                                   self.logger)
+        self.accelerator = Scheduler(self.sche_config,self.env,self.taskset,
+                                     self.task_release_fifo,self.instr_fifo,self.feedback_fifo,
+                                     self.logger)
+    
+    
 
 
 
-
-
-
-            
-
-
-
+class Accelerator:
+    def __init__(self,
+                 env:simpy.Environment,taskset:AccTasksetSim,
+                 instr_fifo:simpy.Store,
+                 feedback_fifo:simpy.Store,
+                 logger:logging.Logger):
+        self.env:simpy.Environment = env
+        self.taskset:AccTasksetSim = taskset
+        self.instr_fifo:simpy.Store = instr_fifo
+        self.feedback_fifo:simpy.Store = feedback_fifo
+        self.logger:logging.Logger = logger
+    def _acc(self):
+        """simulate acceleration: pay preemption/resume ovhd first, then execution time
+        return the feedback
+        """
+        while True:
+            instr_evt = self.instr_fifo.get()
+            result = yield simpy.events.AnyOf(self.env, [instr_evt])
+            instr:Instr = result.value #get instruction
+            ctask_obj:AccTaskSim = self.taskset.get_task(instr.job.task)
+            cregion_obj:AccRegionSim = ctask_obj.regions[instr.region]# get current task & region
+            if instr.preempt:#pay preemption ovhd
+                #the swap-out ovhd is stored after the last region
+                ltask_obj:AccTaskSim = self.taskset.get_task(instr.last_task)
+                lregion_obj:AccRegionSim = ltask_obj.regions[instr.last_region]#last task & region
+                preempt_ovhd = lregion_obj.so
+                self.logger.debug("[{}][Acc] preemption: old_task:{}, old_region:{}, new_task:{}"
+                                  .format(self.env.now,instr.last_task,instr.last_region,instr.job.task))
+                yield self.env.timeout(preempt_ovhd)
+            elif instr.resume:#pay resume ovhd
+                #the swap-in ovhd is stored before this regiom
+                resume_ovhd = cregion_obj.si
+                self.logger.debug("[{}][Acc] resume: old_task:{}, new_task:{}, new_region:{}"
+                                  .format(self.env.now,instr.last_task,instr.job.task,instr.region))
+                yield self.env.timeout(resume_ovhd)
+            #pay execution time
+            exec_time = cregion_obj.exec_time
+            self.logger.debug("[{}][Acc] exec: task:{}, job:{}, region:{}"
+                                  .format(self.env.now,instr.job.task,instr.job.job_id,instr.region))
+            yield self.env.timeout(exec_time)
+            #send feedback
+            fb = Feedback(instr.job,instr.region)
+            yield self.feedback_fifo.put(fb)
+    def run(self):
+        self.env.process(self._acc())
 if __name__ == '__main__':
     config = AccConfig.from_json("/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json")
     # w1=Workload()
