@@ -48,13 +48,14 @@ acc:
 from parse_workload import AccConfig, Workload
 from apply_strategy import *
 from schedulability_analysis import AccRegion, AccTask, AccTaskset, schedulability_analyzer, PP_placer
-from utils import debug_print, init_logger
+from utils import debug_print, init_logger, lcm
 from copy import deepcopy
 import json
 import simpy
 import logging
 from typing import List, Optional
 import sys
+import os
 
 
 class AccRegionSim:
@@ -141,12 +142,23 @@ class ScheConfig:
     @classmethod
     def from_json(cls, filepath:str):
         """Load scheduler configuration from a JSON file."""
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"Config file not found: {filepath}")
         with open(filepath, 'r') as f:
             data = json.load(f)
-        # filter out any comment fields
-        filtered = {k: v for k, v in data.items() if not k.startswith('_')}
-        return cls(**filtered)
 
+        required_keys = [
+            "feed_back_latency", "task_release_latency", "issue_instr_latency", 
+            "task_finish_latency", "heap_top_down_depth", "heap_top_down_II",
+            "heap_bottom_up_depth", "heap_bottom_up_II"
+        ]
+
+        # Check all required keys exist
+        missing = [k for k in required_keys if k not in data]
+        if missing:
+            raise ValueError(f"Missing required config fields: {missing}")
+
+        return cls(**{k: data[k] for k in required_keys})
     def __repr__(self):
         return json.dumps(self.__dict__, indent=2)
 
@@ -162,6 +174,9 @@ class JobSim:
         self.process = None #first time be processed
         self.issue = [] #cycles of issue
         self.feedback = [] #cycles of feedbacks
+    def __repr__(self):
+        return (f"JobSim(task={self.task}, id={self.job_id}, region={self.region}/"
+            f"{self.num_region}, release={self.release}, ddl={self.ddl})")
     
 class JobGenerator:
     def __init__(self,env:simpy.Environment,taskset:AccTasksetSim,
@@ -201,13 +216,17 @@ class Instr:
     """data class for the instruction channel"""
     def __init__(self,job:JobSim,region:int,preempt:bool,resume:bool,
                  last_task:int,last_region:int):
-        self.job:JobSim = None #pass the job to track the whole lifecycle
+        self.job:JobSim = job #pass the job to track the whole lifecycle
         #the task,job,release,ddl info is in the job obj
-        self.region:int = None #region to execute
-        self.preempt:bool = None
-        self.resume:bool = None #instr to conduct preemption
-        self.last_task:int = None
-        self.last_region:int = None #used for conduct swap-in
+        self.region:int = region #region to execute
+        self.preempt:bool = preempt
+        self.resume:bool = resume #instr to conduct preemption
+        self.last_task:int = last_task
+        self.last_region:int = last_region #used for conduct swap-in
+    def __repr__(self):
+        return (f"Instr(job={self.job}, region={self.region}, "
+            f"preempt={self.preempt}, resume={self.resume}, "
+            f"last=({self.last_task},{self.last_region}))")
 
 class Feedback:
     """small item notifying the execution is finished """
@@ -278,11 +297,11 @@ class Scheduler:
         self.issue_flag = True
         yield self.env.timeout(self.sche_config.feed_back_latency)
         self.logger.debug("[{}][Sche] region finish: task:{}, job:{}, region:{}"
-                          .format(self.env.now, feedback.job.task, feedback.job, feedback.region))
+                          .format(self.env.now, feedback.job.task, feedback.job.job_id, feedback.region))
         #check ddl miss when job finished
         if feedback.job.region == feedback.job.num_region:
-            self.logger.info("[{}][Sche] region finish: task:{}, job:{}, region:{}"
-                          .format(self.env.now, feedback.job.task, feedback.job, feedback.region))
+            self.logger.info("[{}][Sche] task finish: task:{}, job:{}, region:{}"
+                          .format(self.env.now, feedback.job.task, feedback.job.job_id, feedback.region))
             if feedback.job.ddl < self.env.now:#deadline not meet
                 self.logger.error("[{}][Sche] deadline miss!: task:{}, job:{}"
                                   .format(self.env.now,feedback.job.task,feedback.job.job_id))
@@ -326,7 +345,7 @@ class Scheduler:
                         )
         yield self.env.timeout(self.sche_config.task_release_latency)
         yield self.instr_fifo.put(instr)
-        self.logger.debug("[{}][Sche] region released: task={}, job={}, region={}"
+        self.logger.debug("[{}][Sche] issue region: task={}, job={}, region={}"
                           .format(self.env.now,next_job.task,next_job.job_id,next_job.region))
         #update status
         next_job.issue.append(self.env.now)
@@ -349,32 +368,6 @@ class Scheduler:
     def run(self):
         self.env.process(self._schedule())
 
-class SimManager:
-    def __init__(self,sche_config:ScheConfig,taskset:AccTasksetSim,logger_name="logger",log_path=None):
-        #input params
-        self.sche_config:ScheConfig = sche_config
-        self.taskset:AccTasksetSim = taskset
-        #simulation envs
-        self.env = simpy.Environment()
-        self.task_release_fifo = simpy.Store(self.env)#at most n tasks are released
-        self.instr_fifo = simpy.Store(self.env,capacity=1)
-        self.feedback_fifo = simpy.Store(self.env,capacity=1)
-        #logging
-        self.logger = init_logger(logger_name,log_path,logging.DEBUG)
-        self.job_generator = JobGenerator(self.env,self.taskset,
-                                          self.task_release_fifo,
-                                          self.logger)
-        self.scheduler = Scheduler(self.sche_config,self.env,self.taskset,
-                                   self.task_release_fifo,self.instr_fifo,self.feedback_fifo,
-                                   self.logger)
-        self.accelerator = Scheduler(self.sche_config,self.env,self.taskset,
-                                     self.task_release_fifo,self.instr_fifo,self.feedback_fifo,
-                                     self.logger)
-    
-    
-
-
-
 class Accelerator:
     def __init__(self,
                  env:simpy.Environment,taskset:AccTasksetSim,
@@ -391,9 +384,7 @@ class Accelerator:
         return the feedback
         """
         while True:
-            instr_evt = self.instr_fifo.get()
-            result = yield simpy.events.AnyOf(self.env, [instr_evt])
-            instr:Instr = result.value #get instruction
+            instr: Instr = yield self.instr_fifo.get()
             ctask_obj:AccTaskSim = self.taskset.get_task(instr.job.task)
             cregion_obj:AccRegionSim = ctask_obj.regions[instr.region]# get current task & region
             if instr.preempt:#pay preemption ovhd
@@ -401,13 +392,13 @@ class Accelerator:
                 ltask_obj:AccTaskSim = self.taskset.get_task(instr.last_task)
                 lregion_obj:AccRegionSim = ltask_obj.regions[instr.last_region]#last task & region
                 preempt_ovhd = lregion_obj.so
-                self.logger.debug("[{}][Acc] preemption: old_task:{}, old_region:{}, new_task:{}"
+                self.logger.info("[{}][Acc] preemption: old_task:{}, old_region:{}, new_task:{}"
                                   .format(self.env.now,instr.last_task,instr.last_region,instr.job.task))
                 yield self.env.timeout(preempt_ovhd)
             elif instr.resume:#pay resume ovhd
                 #the swap-in ovhd is stored before this regiom
                 resume_ovhd = cregion_obj.si
-                self.logger.debug("[{}][Acc] resume: old_task:{}, new_task:{}, new_region:{}"
+                self.logger.info("[{}][Acc] resume: old_task:{}, new_task:{}, new_region:{}"
                                   .format(self.env.now,instr.last_task,instr.job.task,instr.region))
                 yield self.env.timeout(resume_ovhd)
             #pay execution time
@@ -420,6 +411,41 @@ class Accelerator:
             yield self.feedback_fifo.put(fb)
     def run(self):
         self.env.process(self._acc())
+
+class SimManager:
+    def __init__(self,sche_config:ScheConfig,taskset:AccTasksetSim,
+                 sim_time=220000000,
+                 logger_name="logger",log_path=None,log_level=logging.INFO):
+        #input params
+        self.sche_config:ScheConfig = sche_config
+        self.taskset:AccTasksetSim = taskset
+        self.sim_time = sim_time
+        #simulation envs
+        self.env = simpy.Environment()
+        self.task_release_fifo = simpy.Store(self.env)#at most n tasks are released
+        self.instr_fifo = simpy.Store(self.env,capacity=1)
+        self.feedback_fifo = simpy.Store(self.env,capacity=1)
+        #logging
+        self.logger = init_logger(logger_name,log_path,log_level)
+        #components
+        self.job_generator = JobGenerator(self.env,self.taskset,
+                                          self.task_release_fifo,
+                                          self.logger)
+        self.scheduler = Scheduler(self.sche_config,self.env,self.taskset,
+                                   self.task_release_fifo,self.instr_fifo,self.feedback_fifo,
+                                   self.logger)
+        self.accelerator = Accelerator(self.env,self.taskset,
+                                       self.instr_fifo,self.feedback_fifo,
+                                       self.logger)
+        self.job_generator.run()
+        self.scheduler.run()
+        self.accelerator.run()
+    def run(self):
+        self.env.run(until=self.sim_time)
+    
+    
+
+
 if __name__ == '__main__':
     config = AccConfig.from_json("/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json")
     # w1=Workload()
@@ -438,14 +464,13 @@ if __name__ == '__main__':
     s2.from_workload(w2)
 
     debug_print('form taskset')
-    taskset = AccTaskset([s1,s2],[0.2,0.7])
+    taskset = AccTaskset([s1,s2],[0.7,0.2])
     for task in taskset.tasks: print(task.ID)
-    # exit()
 
-    # debug_print('begin sche analysis')
+    # print('begin sche analysis')
     # ana = schedulability_analyzer(taskset)
     # ana.schedulability_test()
-    # debug_print('sche analysis:',ana.sche_test_success)
+    # print('sche analysis:',ana.sche_test_success)
 
     print('begin PPP')
     PPP = PP_placer(taskset)
@@ -453,5 +478,16 @@ if __name__ == '__main__':
     print("PPP success:",PPP.PPP_success)
     print(TS.tasks)
 
-    ts_sim = AccTasksetSim(TS)
+    ts_sim = AccTasksetSim(taskset)
     print(ts_sim)
+
+
+    sche_config = ScheConfig.from_json("/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/sche_config.json")
+
+    sim_manager = SimManager(
+        sche_config=sche_config,
+        taskset=ts_sim,
+        sim_time=lcm(ts_sim.periods),
+        logger_name='test',log_level=logging.INFO,log_path='test.log'
+    )
+    sim_manager.run()
