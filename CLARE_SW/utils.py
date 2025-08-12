@@ -3,6 +3,7 @@ import math
 import inspect
 import logging
 import sys
+import random
 
 def print_iters(workload, fields: List[str]=['layer','idx','is_preemptive','strategy']):
     """Print a list of AccIter object in pandas dataframe manner"""
@@ -36,13 +37,20 @@ def init_logger(
         name: str,
         log_file: Optional[str] = None,
         level: int = logging.INFO,
+        enable: bool = True,
         fmt: str = "[%(asctime)s][%(levelname)s] %(message)s",
         datefmt: str = "%Y-%m-%d %H:%M:%S"
     ) -> logging.Logger:
+        """set enable to False to disable the logger"""
         logger = logging.getLogger(name)
         logger.setLevel(level)
         logger.handlers.clear()  # avoid duplicated handlers if called multiple times
         formatter = logging.Formatter(fmt=fmt, datefmt=datefmt)
+        if not enable:
+            # debug_print('disable logger')
+            logger.handlers.clear()     # remove any handlers
+            logger.disabled = True      # completely disable the logger
+            logger.propagate = False
         if log_file is None:# Console handler
             console_handler = logging.StreamHandler(sys.stdout)
             console_handler.setLevel(level)
@@ -54,3 +62,15 @@ def init_logger(
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
         return logger
+
+def uunifast(n, U_total):
+    """Return a List of utilizations, the sum of util is U_total, #elements is n"""
+    utilizations = []
+    sum_u = U_total
+    for i in range(1, n):
+        next_sum_u = sum_u * (random.random() ** (1 / (n - i)))
+        utilizations.append(sum_u - next_sum_u)
+        sum_u = next_sum_u
+    utilizations.append(sum_u)
+    utilizations.sort(reverse=True)
+    return utilizations

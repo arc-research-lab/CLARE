@@ -303,7 +303,7 @@ class Scheduler:
             self.logger.info("[{}][Sche] task finish: task:{}, job:{}, region:{}"
                           .format(self.env.now, feedback.job.task, feedback.job.job_id, feedback.region))
             if feedback.job.ddl < self.env.now:#deadline not meet
-                self.logger.error("[{}][Sche] deadline miss!: task:{}, job:{}"
+                self.logger.warning("[{}][Sche] deadline miss!: task:{}, job:{}"
                                   .format(self.env.now,feedback.job.task,feedback.job.job_id))
                 raise ValueError("deadline miss")
     def __process_job_gen(self,task_release_evt,max_heap_bottom_up_latency):
@@ -415,7 +415,7 @@ class Accelerator:
 class SimManager:
     def __init__(self,sche_config:ScheConfig,taskset:AccTasksetSim,
                  sim_time=220000000,
-                 logger_name="logger",log_path=None,log_level=logging.INFO):
+                 logger_enable = False, logger_name="logger",log_path=None,log_level=logging.INFO):
         #input params
         self.sche_config:ScheConfig = sche_config
         self.taskset:AccTasksetSim = taskset
@@ -426,7 +426,7 @@ class SimManager:
         self.instr_fifo = simpy.Store(self.env,capacity=1)
         self.feedback_fifo = simpy.Store(self.env,capacity=1)
         #logging
-        self.logger = init_logger(logger_name,log_path,log_level)
+        self.logger = init_logger(logger_name,log_path,log_level,enable=logger_enable)
         #components
         self.job_generator = JobGenerator(self.env,self.taskset,
                                           self.task_release_fifo,
@@ -441,9 +441,19 @@ class SimManager:
         self.scheduler.run()
         self.accelerator.run()
     def run(self):
-        self.env.run(until=self.sim_time)
-    
-    
+        """
+        run the simulation and try-catch the valueError of deadline miss
+        return bool value of the simulation success
+        """
+        try:
+            self.env.run(until=self.sim_time)
+        except ValueError as e:
+            if "deadline miss" in str(e):
+                return False
+            else:
+                raise  # re-raise unexpected ValueErrors
+        return True
+        
 
 
 if __name__ == '__main__':

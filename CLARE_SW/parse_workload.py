@@ -205,6 +205,6 @@ if __name__ == '__main__':
     # print(iter)
 
     w1=Workload()
-    w1.decompose_NN([[256,1024,4096],],config)
+    w1.decompose_NN([[256,1024,4096],[256,1024,4096]],config)
     # w1.comp_ovhd(config)
     w1.print_iters(['layer','idx','load','comp','store','o_start','last_o_start','so_r','so_p','si_r','si_p'])
