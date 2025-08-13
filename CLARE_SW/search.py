@@ -6,6 +6,12 @@ import json
 import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import pickle
+import signal
+from datetime import datetime
+from collections import defaultdict
+from copy import deepcopy
+from tqdm import tqdm
+
 
 from utils import uunifast, lcm, debug_print
 from parse_workload import AccConfig,Workload
@@ -31,16 +37,18 @@ class TestDesignPt:
     """static class grouping series of funcs"""
     def test(DNN_shapes:List[List[List[int]]],utils:list,
                         acc_config:AccConfig,sche_config:ScheConfig,
-                        strategies:List=['np','lw','ip','ir','if','ip-ppp','ir-ppp','if-ppp']):
-        """test a design point, comparing different stategies
+                        strategy:str):
+        """test a design point, with fixed DNNshape, util for each task, and strategy
         input: 
             - DNN_shapes(list): 3-d list: task-layer-M,K,N shape of the layer
             - utilizations(list), 
             - acc_config(AccConfig), sche_config(ScheConfig)
-            - strategies(list):
+            - strategies(str):
         Output:
             - pd.dataframe:
                 - 3-rows for sche_analysis, PPP, and simulation success 
+                - one col for the strategy
+            - Note the data processing will be handled by the warpper of this func
         Allowed strategies
             - np: Non-Preemptive
             - lw: LayerWise-preemptive
@@ -49,32 +57,32 @@ class TestDesignPt:
             - if: Intra-layer-preemptive Flexible
             - ip-ppp,ir-ppp,if-ppp: ip,ir,if w/t PP placement optimization
         parse the shape --> workload --> strategies --> conduct sche analysis/PPP for each strategy --> simulation"""
-        assert set(strategies).issubset(['np','lw','ip','ir','if','ip-ppp','ir-ppp','if-ppp']),\
-            "[test_design_pt.test] invalid strategies"
+        assert strategy in ['np','lw','ip','ir','if','ip-ppp','ir-ppp','if-ppp'],\
+            "[test_design_pt.test] invalid strategy"
         #dump shape into workload
         workloads:List[Workload] = []
         for idx, task_shape in enumerate(DNN_shapes):
             workloads.append(Workload(task_shape,acc_config,f"task{idx}"))
         #conduct test
-        result_df_list = []
-        for s in strategies:
-            if s == 'np':
-                result_df_list.append(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyNonPreemptive))
-            elif s== 'lw':
-                result_df_list.append(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyLayerwise))
-            elif s== 'ip':
-                result_df_list.append(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyPersist))
-            elif s== 'ir':
-                result_df_list.append(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyRecompute))
-            elif s== 'if':
-                result_df_list.append(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyFlexible))
-            elif s== 'ip-ppp':
-                result_df_list.append(TestDesignPt._test_PPP(workloads,utils,sche_config,s,StrategyPersistPPP))
-            elif s== 'ir-ppp':
-                result_df_list.append(TestDesignPt._test_PPP(workloads,utils,sche_config,s,StrategyRecomputePPP))
-            elif s== 'if-ppp':
-                result_df_list.append(TestDesignPt._test_PPP(workloads,utils,sche_config,s,StrategyFlexiblePPP))
-        return pd.concat(result_df_list,axis=1)
+        result_df = None
+        s = strategy
+        if s == 'np':
+            result_df=(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyNonPreemptive))
+        elif s== 'lw':
+            result_df=(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyLayerwise))
+        elif s== 'ip':
+            result_df=(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyPersist))
+        elif s== 'ir':
+            result_df=(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyRecompute))
+        elif s== 'if':
+            result_df=(TestDesignPt._test_sche_analysis(workloads,utils,sche_config,s,StrategyFlexible))
+        elif s== 'ip-ppp':
+            result_df=(TestDesignPt._test_PPP(workloads,utils,sche_config,s,StrategyPersistPPP))
+        elif s== 'ir-ppp':
+            result_df=(TestDesignPt._test_PPP(workloads,utils,sche_config,s,StrategyRecomputePPP))
+        elif s== 'if-ppp':
+            result_df=(TestDesignPt._test_PPP(workloads,utils,sche_config,s,StrategyFlexiblePPP))
+        return result_df
 
     def _test_sche_analysis(workloads:List[Workload], utils, sche_config:ScheConfig, strategy:str,strategy_cls:Type[PreemptionStrategy]):
         """test one of the strategy, suit for strategies w/o PPP
@@ -100,10 +108,10 @@ class TestDesignPt:
         else:
             #dump taskset for simulation
             ts_sim = AccTasksetSim(ts)
-            sim_time = lcm(ts_sim.periods)
+            sim_time = min(lcm(ts_sim.periods),2300000000)
             sim_manager = SimManager(sche_config,ts_sim,sim_time=sim_time)
             sim_success = sim_manager.run()
-            debug_print(f"{sum(utils)}:{utils}:{strategy} begin sim,periods:{ts_sim.periods}, simtime:{sim_time}")
+            # debug_print(f"{sum(utils)}:{utils}:{strategy} begin sim,periods:{ts_sim.periods}, simtime:{sim_time}")
             return pd.DataFrame(
                                 {strategy: [False, False, sim_success]},
                                 index=['sche_success', 'ppp_success', 'sim_success']
@@ -136,7 +144,7 @@ class TestDesignPt:
             sim_time = lcm(ts_sim.periods)
             sim_manager = SimManager(sche_config,ts_sim,sim_time=sim_time)
             sim_success = sim_manager.run()
-            debug_print(f"{sum(utils)}:{utils}:{strategy} begin sim,periods:{ts_sim.periods}, simtime:{sim_time}")
+            # debug_print(f"{sum(utils)}:{utils}:{strategy} begin sim,periods:{ts_sim.periods}, simtime:{sim_time}")
             return pd.DataFrame(
                                 {strategy: [False, False, sim_success]},
                                 index=['sche_success', 'ppp_success', 'sim_success']
@@ -152,6 +160,7 @@ class Searcher:
                  DNN_shapes:List[List[List[int]]],
                  utils:list = [0.5,0.55,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95,1],#total utils
                  num_util = 100,#points generate for each util
+                 strategies = ['np','lw','ip','ir','if','ip-ppp','ir-ppp','if-ppp'],
                  workspace:str = 'search_results'):
         self.workspace = workspace
         if not os.path.exists(self.workspace): #begin from scarch
@@ -162,11 +171,13 @@ class Searcher:
             self.DNN_shapes = DNN_shapes
             self.utils = utils
             self.num_util = num_util
+            self.strategies = strategies
             shutil.copy(acc_config_path, os.path.join(self.workspace, 'acc_config.json'))
             shutil.copy(sche_config_path, os.path.join(self.workspace, 'sche_config.json'))
             # dump configs to json files
             self._save_json(self.DNN_shapes,'DNN_shapes.json')
             self._save_json(self.utils,'utils.json')
+            self._save_json(self.strategies,'strategies.json')
             # generate 
             self.util_dict = self._gen_utils()
             self._save_json(self.util_dict,'util_dict.json')
@@ -175,43 +186,55 @@ class Searcher:
             self.sche_config = ScheConfig.from_json(os.path.join(self.workspace, 'sche_config.json'))
             self.DNN_shapes = self._load_json('DNN_shapes.json')
             self.utils = self._load_json('utils.json')
+            self.strategies = self._load_json('strategies.json')
             self.util_dict = self._load_json('util_dict.json')     
     
     def worker(self,task):
-        total_util, u = task
-        debug_print(f"{total_util}:{u}")
-        
-        result = TestDesignPt.test(self.DNN_shapes,u,self.acc_config,self.sche_config)
-        return (total_util, u, result)
+        total_util, u, strategy = task
+        result = TestDesignPt.test(self.DNN_shapes,u,self.acc_config,self.sche_config,strategy)
+        return (total_util, u, strategy, result)
     
     def run(self):
         #init run_work
         run_works = []
         for total_util, u_list in self.util_dict.items():
             for u in u_list:
-                run_works.append((total_util,u))
+                for s in self.strategies:
+                    run_works.append((total_util,u,s))
    
         raw_results = []
         try:
             with ProcessPoolExecutor(max_workers=None) as executor:
                 futures = [executor.submit(self.worker, run_work) for run_work in run_works]
-                for future in as_completed(futures):
+                for future in tqdm(as_completed(futures), total=len(run_works), desc="Processing"):
                     raw_result = future.result()
                     raw_results.append(raw_result)
+
         except KeyboardInterrupt:
             print("KeyboardInterrupt received, shutting down workers...")
             executor.shutdown(wait=False, cancel_futures=True)
+            print("killing all ...")
+            for p in executor._processes.values():
+                os.kill(p.pid, signal.SIGKILL)
             raise
+        debug_print('All design points finished!')
         self._save_pkl(raw_results,'raw_results.pkl')
-        # Group results by total_util
+       
         accum_results = {}
-        for total_util, u, df in raw_results:
-            if total_util not in accum_results:
-                accum_results[total_util] = df.astype(int).copy()
-            else:
-                # Example accumulation: sum boolean DataFrames as int (True=1, False=0)
-                accum_results[total_util] += df.astype(int)
-        self.results_dict = accum_results
+        grouped = defaultdict(list)
+        for total_util, u, strategy, df in raw_results:
+            grouped[total_util].append(df)
+
+        for total_util, dfs in grouped.items():
+            merged = pd.DataFrame()  # start empty
+            for df in dfs:
+                # If column exists in merged, accumulate
+                for col in df.columns:
+                    if col in merged.columns:
+                        merged[col] += df[col].astype(int)
+                    else:
+                        merged[col] = df[col].astype(int)
+            accum_results[total_util] = merged
         self._save_pkl(accum_results,'accum_results.pkl')
         return accum_results
 
@@ -228,33 +251,65 @@ class Searcher:
         with open(os.path.join(self.workspace, filename), 'rb') as f:
             return pickle.load(f)
     def _gen_utils(self):
-        num_task = len (self.DNN_shapes)
+        num_task = len(self.DNN_shapes)
         util_dict = {}
-        for util in self.utils:
-            util_dict[util]=[]
+
+        # generate first util
+        f_util = self.utils[0]
+        util_dict[f_util] = []
+        for i in range(self.num_util):
+            u = uunifast(num_task, f_util)
+            while min(u) <0.02:#avoid generating too small u, which leads to long sim time
+                u = uunifast(num_task, f_util)
+            util_dict[f_util].append(uunifast(num_task, f_util))
+
+        # generate other utils
+        for util in self.utils[1:]:
+            util_dict[util] = []
             for i in range(self.num_util):
-                util_dict[util].append(uunifast(num_task,util))
+                u = deepcopy(util_dict[f_util][i])
+                u[0] += (util - f_util)   # adjust first element
+                util_dict[util].append(u) # append to the list
         return util_dict
 
-
-
-
 if __name__ == "__main__":
+    workspace='/home/shixin/RTSS2025_AE/fig11av4'
     acc_config = AccConfig.from_json('/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json')
     sche_config = ScheConfig.from_json('/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/sche_config.json')
     DNN = [
         [[1024,8192,1024],[1024,8192,1024]],
         [[1024,8192,1024],[1024,8192,1024]]
     ]
-    result = TestDesignPt.test(DNN,[0.4,0.4],acc_config,sche_config,strategies=['np','lw','if-ppp'])
-    print(result)
-    result1 = TestDesignPt.test(DNN,[0.3,0.3],acc_config,sche_config,strategies=['np','lw','if-ppp'])
-    print(result1)
-    print(result1.astype(int)+result.astype(int))
-
-    searcher = Searcher('/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json','/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/sche_config.json',
-                        DNN,[0.5,0.9],10)
+    start = datetime.now()
+    util_list = [0.5, 0.525, 0.55, 0.575, 0.6, 0.625, 0.65, 0.675, 0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95, 0.975,1]
+    searcher = Searcher('/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config_lightweight.json',
+                        '/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/sche_config.json',
+                        DNN,
+                        utils=util_list,
+                        num_util=100,
+                        workspace=workspace)
     result = searcher.run()
+    with open(os.path.join(workspace, 'accum_results.pkl'), 'rb') as f:
+            result = pickle.load(f)
+    end = datetime.now()
+    print('sche_rate:')
+    rows = []
     for u, df in result.items():
         print(u)
         print(df)
+
+    sim_rows = []
+    for util, df in result.items():
+        if 'sim_success' in df.index:
+            sim_rows.append(pd.Series(df.loc['sim_success'], name=util))
+        else:
+            # If sim_success row not present, you can skip or fill with NaN
+            sim_rows.append(pd.Series([pd.NA]*df.shape[1], index=df.columns, name=util))
+    # Step 2: Concatenate into a DataFrame with utils as index
+    result_df = pd.concat(sim_rows, axis=1)
+
+    print(result_df)
+
+    print('start time:',start)
+    print('end time: end',end)
+    print('elapse:',end-start)

@@ -216,7 +216,7 @@ class AccTaskset:
     def _comp_period(self):
         self.periods = [0]*len(self.tasks)
         for idx,task in enumerate(self.tasks):
-            period = math.ceil(task.exec_time/self.utils[idx])
+            period = math.ceil(task.exec_time_cached/self.utils[idx])
             self.periods[idx]=period
     def _comp_period_fast(self):
         '''randomly generated periods will easily have a lcm of periods up to 10^14 cycles,
@@ -227,7 +227,7 @@ class AccTaskset:
         periods = [0]*len(self.tasks)
         #comp original periods
         for idx,task in enumerate(self.tasks):
-            period = math.ceil(task.exec_time/self.utils[idx])
+            period = math.ceil(task.exec_time_cached/self.utils[idx])
             periods[idx]=period
         #increase the periods to the multiple of p0
         for i in range(len(periods)):
@@ -236,13 +236,12 @@ class AccTaskset:
         while True:
             util=0
             for idx,task in enumerate(self.tasks):
-                util+= task.exec_time/periods[i]
+                util+= task.exec_time_cached/periods[idx]
             if util >= total_util:
                 break
             else:
-                periods[i]-=p1
+                periods[0]-=p1
         self.periods = periods
-        debug_print(util,'<->',total_util)
         
 
     @property
