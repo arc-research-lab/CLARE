@@ -207,7 +207,7 @@ class AccTaskset:
         if len(strategies)!=0:
             self.utils = deepcopy(utils)
             self._from_strategies(strategies)
-            self._comp_period()
+            self._comp_period_fast()
             self._comp_preemption_ovhd()
     def _from_strategies(self, strategies):
         assert len(strategies)!=0
@@ -218,6 +218,33 @@ class AccTaskset:
         for idx,task in enumerate(self.tasks):
             period = math.ceil(task.exec_time/self.utils[idx])
             self.periods[idx]=period
+    def _comp_period_fast(self):
+        '''randomly generated periods will easily have a lcm of periods up to 10^14 cycles,
+            which is hard to simulate, adjust the periods for small lcm'''
+        p0 = 230000 #all periods will be multiple of 220000 cycles, i.e. 1 ms
+        p1 = 1000 #adjust the periods of the first task to keep the overall util the same
+        total_util = sum(self.utils)
+        periods = [0]*len(self.tasks)
+        #comp original periods
+        for idx,task in enumerate(self.tasks):
+            period = math.ceil(task.exec_time/self.utils[idx])
+            periods[idx]=period
+        #increase the periods to the multiple of p0
+        for i in range(len(periods)):
+            periods[i]=math.ceil(periods[i]/p0)*p0
+        #reduce the p of the first task to maintain the util
+        while True:
+            util=0
+            for idx,task in enumerate(self.tasks):
+                util+= task.exec_time/periods[i]
+            if util >= total_util:
+                break
+            else:
+                periods[i]-=p1
+        self.periods = periods
+        debug_print(util,'<->',total_util)
+        
+
     @property
     def sorted_tasks(self):
         assert len(self.periods)==len(self.tasks),'[AccTaskset.sorted_tasks]:unmatching #periods and #tasks'

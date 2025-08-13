@@ -1,5 +1,5 @@
 from typing import List, Type
-import random #random seed are set in the Searcher class
+import random #random seed are set in the beginning
 import pandas as pd
 import os
 import json
@@ -7,7 +7,7 @@ import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import pickle
 
-from utils import uunifast, lcm
+from utils import uunifast, lcm, debug_print
 from parse_workload import AccConfig,Workload
 from apply_strategy import *
 from schedulability_analysis import AccTaskset, schedulability_analyzer, PP_placer
@@ -103,6 +103,7 @@ class TestDesignPt:
             sim_time = lcm(ts_sim.periods)
             sim_manager = SimManager(sche_config,ts_sim,sim_time=sim_time)
             sim_success = sim_manager.run()
+            debug_print(f"{sum(utils)}:{utils}:{strategy} begin sim,periods:{ts_sim.periods}, simtime:{sim_time}")
             return pd.DataFrame(
                                 {strategy: [False, False, sim_success]},
                                 index=['sche_success', 'ppp_success', 'sim_success']
@@ -135,6 +136,7 @@ class TestDesignPt:
             sim_time = lcm(ts_sim.periods)
             sim_manager = SimManager(sche_config,ts_sim,sim_time=sim_time)
             sim_success = sim_manager.run()
+            debug_print(f"{sum(utils)}:{utils}:{strategy} begin sim,periods:{ts_sim.periods}, simtime:{sim_time}")
             return pd.DataFrame(
                                 {strategy: [False, False, sim_success]},
                                 index=['sche_success', 'ppp_success', 'sim_success']
@@ -174,23 +176,33 @@ class Searcher:
             self.DNN_shapes = self._load_json('DNN_shapes.json')
             self.utils = self._load_json('utils.json')
             self.util_dict = self._load_json('util_dict.json')     
+    
+    def worker(self,task):
+        total_util, u = task
+        debug_print(f"{total_util}:{u}")
+        
+        result = TestDesignPt.test(self.DNN_shapes,u,self.acc_config,self.sche_config)
+        return (total_util, u, result)
+    
     def run(self):
         #init run_work
         run_works = []
         for total_util, u_list in self.util_dict.items():
             for u in u_list:
                 run_works.append((total_util,u))
-        def worker(task):
-            total_util, u = task
-            result = TestDesignPt.test(self.DNN_shapes,u,self.acc_config,self.sche_config)
-            return (total_util, u, result)
-        
+   
         raw_results = []
-        with ProcessPoolExecutor(max_workers=None) as executor:
-            futures = [executor.submit(worker, run_work) for run_work in run_works]
-            for future in as_completed(futures):
-                raw_result = future.result()
-                raw_results.append(raw_result)
+        try:
+            with ProcessPoolExecutor(max_workers=None) as executor:
+                futures = [executor.submit(self.worker, run_work) for run_work in run_works]
+                for future in as_completed(futures):
+                    raw_result = future.result()
+                    raw_results.append(raw_result)
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt received, shutting down workers...")
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise
+        self._save_pkl(raw_results,'raw_results.pkl')
         # Group results by total_util
         accum_results = {}
         for total_util, u, df in raw_results:
@@ -200,6 +212,7 @@ class Searcher:
                 # Example accumulation: sum boolean DataFrames as int (True=1, False=0)
                 accum_results[total_util] += df.astype(int)
         self.results_dict = accum_results
+        self._save_pkl(accum_results,'accum_results.pkl')
         return accum_results
 
     def _save_json(self, data, filename):
@@ -208,6 +221,12 @@ class Searcher:
     def _load_json(self, filename):
         with open(os.path.join(self.workspace, filename), 'r') as f:
             return json.load(f)
+    def _save_pkl(self, data, filename):
+        with open(os.path.join(self.workspace, filename), 'wb') as f:
+            pickle.dump(data, f)  
+    def _load_pkl(self, filename):
+        with open(os.path.join(self.workspace, filename), 'rb') as f:
+            return pickle.load(f)
     def _gen_utils(self):
         num_task = len (self.DNN_shapes)
         util_dict = {}
@@ -234,7 +253,8 @@ if __name__ == "__main__":
     print(result1.astype(int)+result.astype(int))
 
     searcher = Searcher('/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json','/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/sche_config.json',
-                        DNN,[0.5,0.9],5)
+                        DNN,[0.5,0.9],10)
     result = searcher.run()
     for u, df in result.items():
+        print(u)
         print(df)
