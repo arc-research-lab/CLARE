@@ -108,7 +108,14 @@ class TestDesignPt:
         else:
             #dump taskset for simulation
             ts_sim = AccTasksetSim(ts)
-            sim_time = min(lcm(ts_sim.periods),2300000000)
+            # sim_time = min(lcm(ts_sim.periods),1150000000)
+            #conservertive estimation:
+            sim_time = lcm(ts_sim.periods)
+            if sim_time > 1150000000*20:
+                return pd.DataFrame(
+                                {strategy: [False, False, False]},
+                                index=['sche_success', 'ppp_success', 'sim_success']
+                            )
             sim_manager = SimManager(sche_config,ts_sim,sim_time=sim_time)
             sim_success = sim_manager.run()
             # debug_print(f"{sum(utils)}:{utils}:{strategy} begin sim,periods:{ts_sim.periods}, simtime:{sim_time}")
@@ -141,7 +148,14 @@ class TestDesignPt:
         else:
             #dump taskset for simulation
             ts_sim = AccTasksetSim(ts)
+            # sim_time = lcm(ts_sim.periods)
+            #conservertive estimation:
             sim_time = lcm(ts_sim.periods)
+            if sim_time > 1150000000*20:
+                return pd.DataFrame(
+                                {strategy: [False, False, False]},
+                                index=['sche_success', 'ppp_success', 'sim_success']
+                            )
             sim_manager = SimManager(sche_config,ts_sim,sim_time=sim_time)
             sim_success = sim_manager.run()
             # debug_print(f"{sum(utils)}:{utils}:{strategy} begin sim,periods:{ts_sim.periods}, simtime:{sim_time}")
@@ -261,7 +275,7 @@ class Searcher:
             u = uunifast(num_task, f_util)
             while min(u) <0.02:#avoid generating too small u, which leads to long sim time
                 u = uunifast(num_task, f_util)
-            util_dict[f_util].append(uunifast(num_task, f_util))
+            util_dict[f_util].append(u)
 
         # generate other utils
         for util in self.utils[1:]:
@@ -271,7 +285,23 @@ class Searcher:
                 u[0] += (util - f_util)   # adjust first element
                 util_dict[util].append(u) # append to the list
         return util_dict
-
+    def dump_sche_rate(self, metric):
+        '''show the success rate results of several metrics
+        recorded metric: ['sim_success','sche_success','ppp_success']'''
+        assert metric in ['sim_success','sche_success','ppp_success'], 'invalid metric'
+        result = self._load_pkl('accum_results.pkl')
+        rows = []
+        for util, df in result.items():
+            if 'sim_success' in df.index:
+                rows.append(pd.Series(df.loc['sim_success'], name=util))
+            else:
+                # If sim_success row not present, you can skip or fill with NaN
+                rows.append(pd.Series([pd.NA]*df.shape[1], index=df.columns, name=util))
+        # Step 2: Concatenate into a DataFrame with utils as index
+        result_df = pd.concat(rows, axis=1)
+        result_df.to_excel(os.path.join(self.workspace,f'{metric}.xlsx'))
+        return result_df
+        
 if __name__ == "__main__":
     workspace='/home/shixin/RTSS2025_AE/fig11av4'
     acc_config = AccConfig.from_json('/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json')
@@ -288,28 +318,19 @@ if __name__ == "__main__":
                         utils=util_list,
                         num_util=100,
                         workspace=workspace)
-    result = searcher.run()
-    with open(os.path.join(workspace, 'accum_results.pkl'), 'rb') as f:
-            result = pickle.load(f)
-    end = datetime.now()
-    print('sche_rate:')
-    rows = []
-    for u, df in result.items():
-        print(u)
-        print(df)
+    # result = searcher.run()
+    # with open(os.path.join(workspace, 'accum_results.pkl'), 'rb') as f:
+    #         result = pickle.load(f)
+    # end = datetime.now()
+    # print('sche_rate:')
+    # rows = []
+    # for u, df in result.items():
+    #     print(u)
+    #     print(df)
+    searcher.dump_sche_rate('sim_success')
 
-    sim_rows = []
-    for util, df in result.items():
-        if 'sim_success' in df.index:
-            sim_rows.append(pd.Series(df.loc['sim_success'], name=util))
-        else:
-            # If sim_success row not present, you can skip or fill with NaN
-            sim_rows.append(pd.Series([pd.NA]*df.shape[1], index=df.columns, name=util))
-    # Step 2: Concatenate into a DataFrame with utils as index
-    result_df = pd.concat(sim_rows, axis=1)
+    
 
-    print(result_df)
-
-    print('start time:',start)
-    print('end time: end',end)
-    print('elapse:',end-start)
+    # print('start time:',start)
+    # print('end time: end',end)
+    # print('elapse:',end-start)

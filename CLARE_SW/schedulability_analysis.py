@@ -428,7 +428,8 @@ class PP_placer(schedulability_analyzer):
         # merged.iters = deepcopy(r1.iters)
         #change attributes:
         ##iterations
-        merged.iters = deepcopy(r1.iters) + deepcopy(r2.iters)
+        # merged.iters = deepcopy(r1.iters) + deepcopy(r2.iters) #for perf consideration, do deepcopy in the list
+        merged.iters = r1.iters + r2.iters
         ##ovhd **before** the region: the ovhd between r1 and r2 is removed
         merged.ovhd = r1.ovhd
         ##si: **before** the region
@@ -444,12 +445,15 @@ class PP_placer(schedulability_analyzer):
     def _merge_list(self,regions:List[AccRegion])->AccRegion:
         """merge a list of regions as if merge them sequentially from List[0]
             can 'merge' list of only one region: return the region itself"""
+        
         if len(regions) == 1:#only one region
             return deepcopy(regions[0])
         else:
-            merged_region = self._merge_region(regions[0],regions[1])
+            regions_local = deepcopy(regions)
+            # regions_local = regions
+            merged_region = self._merge_region(regions_local[0],regions_local[1])
             if len(regions) > 2:
-                for region in regions[2:]:
+                for region in regions_local[2:]:
                     merged_region = self._merge_region(merged_region,region)
             return merged_region
     

@@ -74,3 +74,68 @@ def uunifast(n, U_total):
     utilizations.append(sum_u)
     utilizations.sort(reverse=True)
     return utilizations
+
+#generate DNN shapes for realistic workloads
+def gen_transformer(batch:int,seq_length:int,embed_dim:int,
+                    num_head:int,mlp_ratio:int,num_layer:int):
+    """return (shape:list, #layer per transformer blk)"""
+    shape = []
+    assert embed_dim%num_head==0, 'Error: the embed dim is not int multiple of num_heads'
+    head_dim = int(embed_dim/num_head)
+    mlp_dim = embed_dim*mlp_ratio
+    for _ in range(num_layer):
+        # [seq * batch, embed_dim, embed_dim * 3, 1],
+        # [seq * batch, head_dim, seq, heads],
+        # [seq * batch, seq, head_dim, heads],
+        # [seq * batch, embed_dim, embed_dim, 1],
+        # [seq * batch, embed_dim, mlp_dim, 1],
+        # [seq * batch, mlp_dim, embed_dim, 1],
+        #process a layer
+        shape.append([seq_length*batch,embed_dim,embed_dim*3])#QKV dim
+        for _ in range(num_head):#QK
+            shape.append([seq_length*batch,head_dim,seq_length])
+        for _ in range(num_head):#(QK)V
+            shape.append([seq_length*batch,seq_length,head_dim])
+        shape.append([seq_length*batch,embed_dim,embed_dim])#proj
+        shape.append([seq_length*batch,embed_dim,mlp_dim])#proj
+        shape.append([seq_length*batch,mlp_dim,embed_dim])#proj
+    return (shape,4+2*num_head)
+
+def gen_deit_t():
+    shape ,num_blk_per_layer = gen_transformer(6,196,192,3,4,12)
+    return shape
+
+def gen_bert_t():
+    shape ,num_blk_per_layer = gen_transformer(6,512,128,2,4,2)
+    return shape
+
+def gen_bert_mi():
+    shape ,num_blk_per_layer = gen_transformer(6,512,256,4,4,4)
+    return shape
+
+def gen_mlp_mixer():
+    return [
+            [512, 196, 256], [512, 256, 196], [196, 512, 2048], [196, 2048, 512],
+            [512, 196, 256], [512, 256, 196], [196, 512, 2048], [196, 2048, 512],
+            [512, 196, 256], [512, 256, 196], [196, 512, 2048], [196, 2048, 512],
+            [512, 196, 256], [512, 256, 196], [196, 512, 2048], [196, 2048, 512],
+            [512, 196, 256], [512, 256, 196], [196, 512, 2048], [196, 2048, 512],
+            [512, 196, 256], [512, 256, 196], [196, 512, 2048], [196, 2048, 512],
+            [512, 196, 256], [512, 256, 196], [196, 512, 2048], [196, 2048, 512],
+            [512, 196, 256], [512, 256, 196], [196, 512, 2048], [196, 2048, 512]
+        ]
+
+def gen_pointnet():
+    #assume batch = 1 #point=1024
+    mm_shapes = [
+    [64, 3, 1024],     # conv1: 3→64, kernel 1x3
+    [64, 64, 1024],    # conv2: 64→64, 1x1
+    [64, 64, 1024],    # conv3: 64→64, 1x1
+    [128, 64, 1024],   # conv4: 64→128, 1x1
+    [1024, 128, 1024], # conv5: 128→1024, 1x1
+    [1024, 1024, 1],   # max-pool over N=1024 points
+    [512, 1024, 1],    # fc1: 1024→512
+    [256, 512, 1],     # fc2: 512→256
+    [40, 256, 1]       # fc3: 256→40
+    ]
+    return mm_shapes
