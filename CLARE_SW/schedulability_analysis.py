@@ -45,7 +45,7 @@ class AccRegion:
         self.si = 0 #swap-in ovhd before this region, used in simulation
         self.iters = iters if iters is not None else [] #the acc iteration within this region, used to generate execution schedule
     def print_iters(self):
-        print_iters(self,['layer','idx','is_preemptive','strategy'])
+        print_iters(self,['layer','idx','is_preemptive','strategy','ovhd'])
 
     #cache the properties for code perf
     @property
@@ -86,7 +86,7 @@ class AccTask:
 
     def _from_strategy(self, strategy):
         """decouple the workload into NPRs"""
-        assert isinstance(strategy, PreemptionStrategy), "[Acctask.from_strategy]:the input strategy must be subclass of PreemptionStrategy"
+        # assert isinstance(strategy, PreemptionStrategy), f"[Acctask.from_strategy]:the input strategy must be subclass of PreemptionStrategy, get{type(strategy)}"
         s = deepcopy(strategy)
         iters_in_region = []
         self.ID=strategy.ID
@@ -119,6 +119,8 @@ class AccTask:
                 region.ovhd = first_iter.si_r
             elif first_iter.strategy == PPStrategy.persist:
                 region.ovhd = first_iter.si_p
+            else:
+                raise ValueError("[AccTask._comp_resume_ovhd]:Non-exist strategy, got:{}".format(first_iter.strategy))
     
     def _comp_swap_op_latency(self):
         #swap-in

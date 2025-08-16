@@ -301,7 +301,54 @@ class Searcher:
         result_df = pd.concat(rows, axis=1)
         result_df.to_excel(os.path.join(self.workspace,f'{metric}.xlsx'))
         return result_df
-        
+
+def comp_WCET(DNN_shapes:List[List[List[int]]],utils:list,
+                        acc_config:AccConfig,strategy:str):
+    assert strategy in ['np','lw','ir-ppp','ip-ppp','if-ppp']
+    """return the wcet of on DNN. If using PPP, return the wcet after PPP"""
+    #convert DNN shape to workloads
+    workloads:List[Workload] = []
+    for idx, task_shape in enumerate(DNN_shapes):
+            workloads.append(Workload(task_shape,acc_config,f"task{idx}"))
+    #apply strategies:
+    if strategy == 'np':
+        strategy_cls = StrategyNonPreemptive
+        # print('np')
+    elif strategy == 'lw':
+        strategy_cls = StrategyLayerwise
+        # print('lw')
+    elif strategy == 'ir-ppp':
+        strategy_cls = StrategyRecomputePPP
+        # print('ir-ppp')
+    elif strategy == 'ip-ppp':
+        strategy_cls = StrategyPersistPPP
+        # print('ip-ppp')
+    elif strategy == 'if-ppp':
+        strategy_cls = StrategyFlexiblePPP
+        # print('if-ppp')
+    strategies = []
+    for workload in workloads:
+            s = strategy_cls()
+            s.from_workload(workload)
+            strategies.append(s)
+            # s.print_iters(['layer','idx','is_preemptive','strategy','si_r','so_r','si_p','so_p'])
+    #form taskset
+    ts = AccTaskset(strategies,utils)
+    #no PPP strategies: return wcet directly
+    if strategy in ['np','lw']:
+        sum_wcet = 0
+        for task in ts.tasks:
+            sum_wcet +=task.wcet
+        return sum_wcet
+    #PPP strategies: conduct PPP, then return wcet       
+    else:
+        PPP = PP_placer(ts)
+        ts_PPP = PPP.PP_placement()
+        sum_wcet = 0
+        for task in ts_PPP.tasks:
+            sum_wcet +=task.wcet
+        return sum_wcet
+ 
 if __name__ == "__main__":
     workspace='/home/shixin/RTSS2025_AE/fig11av4'
     acc_config = AccConfig.from_json('/home/shixin/RTSS2025_AE/CLARE/CLARE_SW/configs/acc_config.json')
