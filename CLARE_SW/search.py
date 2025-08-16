@@ -337,16 +337,20 @@ def comp_WCET(DNN_shapes:List[List[List[int]]],utils:list,
     #no PPP strategies: return wcet directly
     if strategy in ['np','lw']:
         sum_wcet = 0
-        for task in ts.tasks:
-            sum_wcet +=task.wcet
+        last_task, period = ts.sorted_tasks[-1]
+        sum_wcet = last_task.wcet
         return sum_wcet
     #PPP strategies: conduct PPP, then return wcet       
     else:
         PPP = PP_placer(ts)
         ts_PPP = PPP.PP_placement()
-        sum_wcet = 0
-        for task in ts_PPP.tasks:
-            sum_wcet +=task.wcet
+        last_task, period = ts_PPP.sorted_tasks[-1]
+        if(PPP.PPP_success):
+            sum_wcet = last_task.wcet
+        else:
+            sum_wcet = last_task.exec_time
+        # for task in ts_PPP.tasks:
+        #     sum_wcet +=task.wcet
         return sum_wcet
  
 if __name__ == "__main__":

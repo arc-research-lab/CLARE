@@ -230,9 +230,9 @@ def reproduce_fig11c(size, workspace='./temp/fig11c'):
     result_df5a = result_df5a.reindex(row_order)
     final_dfa = pd.DataFrame(result_df1a.values + result_df2a.values + result_df3a.values + result_df4a.values + result_df5a.values
                             , index=row_order, columns=result_df1a.columns)
-    print('schedulability analysis/PPP success rate')
-    print(final_dfc)
-    final_dfa.to_excel(os.path.join(full_workspace,'total_sche_success.xlsx'))
+    # print('schedulability analysis/PPP success rate')
+    # print(final_dfc)
+    # final_dfa.to_excel(os.path.join(full_workspace,'total_sche_success.xlsx'))
 
 def reproduce_fig13(size, workspace='./temp/fig13'):
     """compare the WCET of different configurations"""
@@ -241,19 +241,24 @@ def reproduce_fig13(size, workspace='./temp/fig13'):
     full_workspace = f"./temp/fig13_{size}"
     acc_config_path = './CLARE_SW/configs/acc_config.json'
     acc_config = AccConfig.from_json(acc_config_path)
-    DNN = [
-        [[6144,512,4096],[6144,512,4096]],
-        [[6144,512,4096],[6144,512,4096]],
-        [[6144,512,4096],[6144,512,4096]]
-    ]
+    
     u_list = [0.7,0.75,0.8,0.85,0.9,0.95,1]
     s_list = ['np','lw','ir-ppp','ip-ppp','if-ppp']
     # u_list = [0.7]
     # s_list = ['if-ppp']
     if size == 'small':
-        num_util = 5
+        num_util = 20
+        DNN = [
+        [[6144,512,4096],[6144,512,4096]],
+        [[6144,512,4096],[6144,512,4096]],
+        ]
     else:
-        num_util = 10
+        num_util = 20
+        DNN = [
+        [[6144,512,4096],[6144,512,4096]],
+        [[6144,512,4096],[6144,512,4096]],
+        [[6144,512,4096],[6144,512,4096]]
+        ]
     
     result_df = pd.DataFrame(0,index=u_list,columns=s_list)
     #compute 
@@ -307,9 +312,9 @@ def reproduce_sche_vs_sim(size, workspace='./temp/sche_vs_sim'):
 def worker(u, s, num_util, DNN, acc_config):
     total = 0
     for _ in range(num_util):
-        utils = uunifast(3, u)
+        utils = uunifast(len(DNN), u)
         if min(utils) < 0.02:
-            utils = uunifast(3, u)
+            utils = uunifast(len(DNN), u)
         total += comp_WCET(DNN, utils, acc_config, s)
     print(f"finished: u={u}({utils}),s={s}, wcet={total}")
     return (u, s, total)   
