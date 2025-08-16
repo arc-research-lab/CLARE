@@ -232,7 +232,7 @@ def reproduce_fig11c(size, workspace='./temp/fig11c'):
                             , index=row_order, columns=result_df1a.columns)
     # print('schedulability analysis/PPP success rate')
     # print(final_dfc)
-    # final_dfa.to_excel(os.path.join(full_workspace,'total_sche_success.xlsx'))
+    final_dfa.to_excel(os.path.join(full_workspace,'total_sche_success.xlsx'))
 
 def reproduce_fig13(size, workspace='./temp/fig13'):
     """compare the WCET of different configurations"""
