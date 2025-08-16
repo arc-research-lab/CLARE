@@ -403,7 +403,7 @@ class schedulability_analyzer():
             return self.TS
             
 class PP_placer(schedulability_analyzer):
-    """a taskset """
+    """inherit from schedulability analyzer, group functions for PP placement """
     def __init__(self, taskset):
         """since the taskset is copied, directly change it for the placed taskset"""
         super().__init__(taskset)

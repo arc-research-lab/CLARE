@@ -26,13 +26,14 @@ from enum import Enum
 from utils import print_iters
 
 class PPStrategy(Enum):
+    """a enum class for different PP implementation"""
     recomp = 'recompute'
     persist = 'persist' 
     layer = 'layerwise' #gap between two layer or at the end of a model, no ovhd
     NA = 'not applicable'
 
 class PreemptionStrategy:
-    "base class for all preemption strategy"
+    "base class for all preemption strategies"
     def __init__(self):
         self.iters:List[AccIter] = []
         self.ID=None

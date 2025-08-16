@@ -1,3 +1,8 @@
+"""
+This script is used for conduct schedulability analysis, PPP, and simulation in larger scale
+The input DNN shape is fixed, and the searcher sweeps through different total utils and strategies
+"""
+
 from typing import List, Type
 import random #random seed are set in the beginning
 import pandas as pd
@@ -18,7 +23,6 @@ from parse_workload import AccConfig,Workload
 from apply_strategy import *
 from schedulability_analysis import AccTaskset, schedulability_analyzer, PP_placer
 from sim_util import ScheConfig, AccTasksetSim, SimManager
-
 
 
 #####################

@@ -413,6 +413,7 @@ class Accelerator:
         self.env.process(self._acc())
 
 class SimManager:
+    '''init and handle the simpy env'''
     def __init__(self,sche_config:ScheConfig,taskset:AccTasksetSim,
                  sim_time=220000000,
                  logger_enable = False, logger_name="logger",log_path=None,log_level=logging.INFO):
